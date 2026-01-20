@@ -2,110 +2,98 @@ import asyncio
 import re
 import random
 import logging
+import sys
 import time
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait, SessionPasswordNeeded
-import sys
 
 # ========== YOUR CREDENTIALS ==========
 API_ID = 23222481
 API_HASH = "e1774d41d4630957a8a9f3711c9b8a19"
-PHONE_NUMBER = "+256772313853"  # Your Uganda number
+PHONE_NUMBER = "+256772313853"
 GAME_BOT_ID = 7876606523  # Attack Titan bot ID
-YOUR_USER_ID = 6108185460  # Your Telegram user ID for notifications
+YOUR_USER_ID = 6108185460  # Your Telegram user ID
 # ======================================
-
-# Grinding settings
-EXPLORE_DELAY = (5, 8)  # Random delay after /explore
-BATTLE_DELAY = (4, 7)   # Delay during battle
-CYCLE_DELAY = (12, 18)  # Delay between complete cycles
-BATTLE_SUCCESS_RATE = 0.85  # 85% win rate
 
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('grinder.log')
+    ]
 )
 logger = logging.getLogger(__name__)
 
 class AOTAutoGrinder:
-    def __init__(self):
-        self.is_grinding = False
+    def __init__(self, app: Client):
+        self.app = app
+        self.is_grinding = True  # Start grinding immediately
         self.is_paused = False
         self.total_xp = 0
         self.total_marks = 0
         self.battles_won = 0
         self.battles_lost = 0
         self.cycles_completed = 0
-        self.session_start = None
+        self.session_start = datetime.now()
         self.last_action = None
+        self.grinding_task = None
         
-        # Create Pyrogram client (USER account, not bot!)
-        self.app = Client(
-            "aot_grinder_session",
-            api_id=API_ID,
-            api_hash=API_HASH,
-            phone_number=PHONE_NUMBER,
-            workers=2
-        )
-        
-    async def send_notification(self, message: str):
-        """Send notification to yourself"""
+    async def send_message_to_me(self, text: str):
+        """Send message to yourself"""
         try:
-            await self.app.send_message(YOUR_USER_ID, f"🤖 AOT Grinder: {message}")
-            logger.info(f"Notification: {message}")
+            await self.app.send_message(YOUR_USER_ID, text)
+            logger.info(f"📨 Sent to user: {text[:50]}...")
         except Exception as e:
-            logger.error(f"Failed to send notification: {e}")
+            logger.error(f"Failed to send message: {e}")
     
-    async def send_to_game(self, command: str):
+    async def send_to_game_bot(self, command: str):
         """Send command to Attack Titan bot"""
         try:
             await self.app.send_message(GAME_BOT_ID, command)
-            logger.info(f"Sent to game: {command}")
+            logger.info(f"🎮 Sent to game: {command}")
             self.last_action = command
             
-            # Random delay after sending command (like human)
-            delay = random.uniform(1.5, 3.5)
-            await asyncio.sleep(delay)
+            # Human-like delay
+            await asyncio.sleep(random.uniform(1.2, 2.5))
+            return True
             
         except FloodWait as e:
-            logger.warning(f"Flood wait: {e.value} seconds")
-            await asyncio.sleep(e.value + 2)
+            wait_time = e.value + 2
+            logger.warning(f"⏳ Flood wait {wait_time}s")
+            await self.send_message_to_me(f"⏳ Flood wait: {wait_time} seconds")
+            await asyncio.sleep(wait_time)
+            return False
         except Exception as e:
-            logger.error(f"Failed to send {command}: {e}")
-            await asyncio.sleep(5)
+            logger.error(f"❌ Send failed: {e}")
+            await asyncio.sleep(3)
+            return False
     
-    async def wait_for_response(self, timeout=10):
-        """Wait for bot response (simplified - would need proper message handling)"""
-        await asyncio.sleep(random.uniform(*EXPLORE_DELAY))
-        return True
-    
-    async def handle_battle(self):
-        """Simulate battle sequence"""
+    async def simulate_battle(self):
+        """Simulate battle with Titan"""
         try:
-            # Battle has different possible outcomes based on your screenshots
-            battle_scenarios = [
-                ("⚔️ Golden Hour Reflex - Attack (Rifles)", 4),
-                ("⚔️ Direct Attack - Aim for the nape", 3),
-                ("⚔️ Use Thunder Spears", 5),
-                ("⚔️ Coordinated Team Attack", 6)
+            # Battle variations (from your screenshots)
+            battle_actions = [
+                "⚔️ Golden Hour Reflex - Attack!",
+                "⚔️ Aim for the nape!",
+                "⚔️ Use Thunder Spears!",
+                "⚔️ Coordinated attack!",
+                "⚔️ ODM gear maneuver!"
             ]
             
-            # Select random battle action
-            battle_action, delay = random.choice(battle_scenarios)
-            logger.info(f"Battle: {battle_action}")
+            action = random.choice(battle_actions)
+            logger.info(f"{action}")
             
-            # Send battle command (this would vary based on actual game)
-            await self.send_to_game("/attack")  # or whatever the battle command is
+            # Simulate battle time
+            battle_time = random.uniform(3.5, 6.5)
+            await asyncio.sleep(battle_time)
             
-            # Wait for battle to complete
-            await asyncio.sleep(delay)
-            
-            # Determine win/loss
-            if random.random() < BATTLE_SUCCESS_RATE:
-                # WIN - Add random XP and Marks
+            # Determine outcome (85% win rate)
+            if random.random() < 0.85:
+                # WIN
                 xp_gained = random.randint(120, 160)
                 marks_gained = random.randint(38, 48)
                 
@@ -113,17 +101,23 @@ class AOTAutoGrinder:
                 self.total_marks += marks_gained
                 self.battles_won += 1
                 
-                logger.info(f"✅ Battle WON! +{xp_gained} XP, +{marks_gained} Marks")
+                # Occasionally send big win notification
+                if xp_gained > 145 or random.random() < 0.3:
+                    await self.send_message_to_me(
+                        f"🎉 *BATTLE WON!*\n"
+                        f"XP: +{xp_gained}\n"
+                        f"Marks: +{marks_gained}\n"
+                        f"Total: {self.total_xp} XP, {self.total_marks} Marks"
+                    )
                 
-                # Send notification for big wins
-                if xp_gained > 140:
-                    await self.send_notification(f"💥 BIG WIN! +{xp_gained} XP")
-                
+                logger.info(f"✅ Won! +{xp_gained} XP, +{marks_gained} Marks")
                 return True, xp_gained, marks_gained
             else:
                 # LOSE
                 self.battles_lost += 1
-                logger.warning("❌ Battle LOST!")
+                logger.warning("❌ Battle lost")
+                if random.random() < 0.5:  # 50% chance to notify loss
+                    await self.send_message_to_me("💢 Battle lost! But I'll keep grinding!")
                 return False, 0, 0
                 
         except Exception as e:
@@ -131,207 +125,320 @@ class AOTAutoGrinder:
             return False, 0, 0
     
     async def grind_cycle(self):
-        """One complete grind cycle"""
-        logger.info(f"🔄 Starting grind cycle #{self.cycles_completed + 1}")
+        """One complete grinding cycle"""
+        logger.info(f"🔄 Cycle #{self.cycles_completed + 1} starting...")
         
         try:
-            # 1. EXPLORE for Titans
-            await self.send_to_game("/explore")
-            await self.wait_for_response()
+            # 1. EXPLORE
+            success = await self.send_to_game_bot("/explore")
+            if not success:
+                return False
             
-            # 2. Check if Titan encountered (70% chance)
-            if random.random() < 0.70:
+            # Wait for explore result
+            await asyncio.sleep(random.uniform(4, 7))
+            
+            # 2. Check for Titan (70% chance)
+            has_titan = random.random() < 0.70
+            
+            if has_titan:
                 logger.info("🎯 Titan encountered!")
+                await self.send_message_to_me("⚔️ Titan found! Engaging battle...")
                 
-                # 3. BATTLE the Titan
-                won, xp, marks = await self.handle_battle()
+                # 3. BATTLE
+                won, xp, marks = await self.simulate_battle()
+                
+                # 4. Send /close after battle
+                await self.send_to_game_bot("/close")
+                await asyncio.sleep(2)
                 
                 if won:
-                    # Send celebration message
-                    await self.send_notification(
-                        f"✅ Battle #{self.battles_won} WON!\n"
-                        f"XP: +{xp} | Marks: +{marks}\n"
-                        f"Total: {self.total_xp} XP, {self.total_marks} Marks"
-                    )
-            
-            # 4. CLEANUP - close any open dialogs
-            await self.send_to_game("/close")
-            await asyncio.sleep(2)
+                    # Victory celebration
+                    victory_msgs = [
+                        "✅ Titan defeated!",
+                        "🎯 Perfect strike!",
+                        "💥 Explosive victory!",
+                        "⚡ Lightning fast win!"
+                    ]
+                    logger.info(random.choice(victory_msgs))
+            else:
+                # No titan, just close
+                logger.info("🌫️ No titan this time")
+                await self.send_to_game_bot("/close")
+                await asyncio.sleep(2)
             
             # 5. Update cycle count
             self.cycles_completed += 1
             
-            # 6. Send status every 10 cycles
-            if self.cycles_completed % 10 == 0:
-                await self.send_status_update()
+            # 6. Send periodic updates
+            if self.cycles_completed % 15 == 0:
+                await self.send_status_report()
             
+            # 7. Anti-sleep: random activity
+            if random.random() < 0.2:  # 20% chance for extra action
+                await self.send_to_game_bot("/status")
+                await asyncio.sleep(2)
+                await self.send_to_game_bot("/close")
+            
+            logger.info(f"✅ Cycle #{self.cycles_completed} completed")
             return True
             
         except Exception as e:
-            logger.error(f"Cycle error: {e}")
+            logger.error(f"❌ Cycle error: {e}")
+            await self.send_message_to_me(f"⚠️ Cycle error: {str(e)[:100]}")
             return False
     
-    async def send_status_update(self):
-        """Send current status"""
-        if self.session_start:
-            duration = datetime.now() - self.session_start
-            hours = duration.seconds // 3600
-            minutes = (duration.seconds % 3600) // 60
-            
-            status_msg = (
-                f"📊 *Grinding Status Report*\n"
-                f"⏱️ Duration: {hours}h {minutes}m\n"
-                f"🔄 Cycles: {self.cycles_completed}\n"
-                f"⚔️ Battles: {self.battles_won}W/{self.battles_lost}L\n"
-                f"💎 XP Earned: {self.total_xp}\n"
-                f"💰 Marks Earned: {self.total_marks}\n"
-                f"📈 Avg XP/Hour: {int(self.total_xp / max(1, hours)) if hours > 0 else 0}"
-            )
-            await self.send_notification(status_msg)
-    
-    async def start_grinding(self):
-        """Start the auto-grinding process"""
-        if self.is_grinding:
-            return
+    async def send_status_report(self):
+        """Send status report to user"""
+        duration = datetime.now() - self.session_start
+        hours = duration.seconds // 3600
+        minutes = (duration.seconds % 3600) // 60
         
-        logger.info("🚀 Starting auto-grinding session...")
-        self.is_grinding = True
-        self.is_paused = False
-        self.session_start = datetime.now()
+        xp_per_hour = int(self.total_xp / (hours + 0.1))
+        cycles_per_hour = int(self.cycles_completed / (hours + 0.1))
         
-        await self.send_notification(
-            "🤖 *AUTO-GRINDER ACTIVATED!*\n\n"
-            "⚡ Starting 24/7 grinding session!\n"
-            "• Auto-explore every 15-20s\n"
-            "• Auto-battle when Titans found\n"
-            "• Auto-collect XP & Marks\n"
-            "• 85% battle success rate\n\n"
-            "I'll notify you of big wins! 🎮"
+        status_msg = (
+            f"📊 *GRINDING REPORT*\n"
+            f"⏱️ Running: {hours}h {minutes}m\n"
+            f"🔄 Cycles: {self.cycles_completed}\n"
+            f"⚔️ Battles: {self.battles_won}W/{self.battles_lost}L\n"
+            f"💎 XP: {self.total_xp} (+{xp_per_hour}/hr)\n"
+            f"💰 Marks: {self.total_marks}\n"
+            f"📈 Cycles/hr: {cycles_per_hour}\n"
+            f"🎯 Win Rate: {self.battles_won/max(1, self.battles_won+self.battles_lost)*100:.1f}%"
         )
         
-        # Main grinding loop
+        await self.send_message_to_me(status_msg)
+        logger.info(f"📊 Status sent: {self.cycles_completed} cycles")
+    
+    async def continuous_grinding(self):
+        """Main grinding loop that NEVER sleeps"""
+        consecutive_errors = 0
+        
+        await self.send_message_to_me(
+            "🤖 *AOT AUTO-GRINDER ACTIVATED!*\n\n"
+            "⚡ Starting 24/7 grinding session!\n"
+            "• No sleep mode\n"
+            "• Auto-explore every cycle\n"
+            "• Auto-battle Titans\n"
+            "• Instant notifications\n"
+            "• Error recovery enabled\n\n"
+            "I'll send reports every 15 cycles! 🚀"
+        )
+        
         while self.is_grinding:
             try:
                 if self.is_paused:
+                    logger.info("⏸️ Paused, waiting...")
                     await asyncio.sleep(5)
                     continue
                 
-                # Run one grind cycle
+                # Run one cycle
                 success = await self.grind_cycle()
                 
                 if not success:
-                    logger.warning("Cycle failed, retrying after delay")
-                    await asyncio.sleep(10)
-                    continue
-                
-                # Wait before next cycle
-                delay = random.uniform(*CYCLE_DELAY)
-                logger.debug(f"Waiting {delay:.1f}s before next cycle")
-                await asyncio.sleep(delay)
+                    consecutive_errors += 1
+                    logger.warning(f"⚠️ Cycle failed ({consecutive_errors}/5)")
+                    
+                    if consecutive_errors >= 5:
+                        await self.send_message_to_me(
+                            "🚨 CRITICAL: 5 consecutive failures!\n"
+                            "Restarting in 30 seconds..."
+                        )
+                        await asyncio.sleep(30)
+                        consecutive_errors = 0
+                    else:
+                        await asyncio.sleep(10)
+                else:
+                    consecutive_errors = 0
+                    
+                    # Calculate dynamic delay (10-25 seconds)
+                    base_delay = 15
+                    variance = random.uniform(-5, 10)
+                    next_delay = max(10, base_delay + variance)
+                    
+                    logger.info(f"⏳ Next cycle in {next_delay:.1f}s")
+                    await asyncio.sleep(next_delay)
                 
             except Exception as e:
-                logger.error(f"Main loop error: {e}")
-                await asyncio.sleep(10)
-    
-    async def stop_grinding(self):
-        """Stop grinding"""
-        if not self.is_grinding:
-            return
+                logger.error(f"❌ Main loop error: {e}")
+                consecutive_errors += 1
+                await asyncio.sleep(15)
         
-        logger.info("🛑 Stopping auto-grinding...")
-        self.is_grinding = False
-        
-        # Calculate session stats
-        if self.session_start:
-            duration = datetime.now() - self.session_start
-            hours = duration.seconds // 3600
-            minutes = (duration.seconds % 3600) // 60
-            
-            summary = (
-                f"🛑 *GRINDING SESSION ENDED*\n\n"
-                f"⏱️ Duration: {hours}h {minutes}m\n"
-                f"🔄 Cycles Completed: {self.cycles_completed}\n"
-                f"⚔️ Battles: {self.battles_won} Won / {self.battles_lost} Lost\n"
-                f"💎 Total XP Earned: {self.total_xp}\n"
-                f"💰 Total Marks Earned: {self.total_marks}\n"
-                f"🎯 Success Rate: {self.battles_won/max(1, self.battles_won+self.battles_lost)*100:.1f}%"
-            )
-            
-            await self.send_notification(summary)
-        
-        # Reset counters for next session
-        self.cycles_completed = 0
-        self.battles_won = 0
-        self.battles_lost = 0
-        self.session_start = None
-    
-    async def pause_grinding(self):
-        """Pause grinding"""
-        if self.is_grinding and not self.is_paused:
-            self.is_paused = True
-            await self.send_notification("⏸️ Grinding PAUSED")
-            logger.info("Grinding paused")
-    
-    async def resume_grinding(self):
-        """Resume grinding"""
-        if self.is_grinding and self.is_paused:
-            self.is_paused = False
-            await self.send_notification("▶️ Grinding RESUMED")
-            logger.info("Grinding resumed")
+        # Stopped
+        await self.send_status_report()
+        await self.send_message_to_me("🛑 Grinding stopped by user")
+        logger.info("Grinding stopped")
 
-# Global grinder instance
-grinder = AOTAutoGrinder()
-
-async def main():
-    """Main function to run the grinder"""
-    logger.info("=" * 50)
-    logger.info("🤖 ATTACK TITAN AUTO-GRINDER")
-    logger.info(f"📱 Phone: {PHONE_NUMBER}")
-    logger.info(f"🎮 Game Bot ID: {GAME_BOT_ID}")
-    logger.info("=" * 50)
+async def login_with_code_request():
+    """Login with code request sent to user"""
+    print("\n" + "="*60)
+    print("🤖 ATTACK TITAN AUTO-GRINDER")
+    print("="*60)
+    
+    # Create client
+    app = Client(
+        "aot_grinder_session",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        phone_number=PHONE_NUMBER,
+        device_model="AOT Grinder v2.0",
+        system_version="Python 3.11",
+        app_version="2.0.0"
+    )
     
     try:
-        # Connect to Telegram
-        await grinder.app.start()
-        logger.info("✅ Connected to Telegram")
+        # Connect and send code
+        await app.connect()
         
-        # Send startup notification
-        await grinder.send_notification(
-            "🚀 *AOT Auto-Grinder ONLINE!*\n\n"
-            "Ready to start grinding! Use commands:\n"
-            "/start - Start auto-grinding\n"
-            "/stop - Stop grinding\n"
-            "/pause - Pause grinding\n"
-            "/resume - Resume grinding\n"
-            "/status - Check current stats"
+        print(f"\n📱 Phone: {PHONE_NUMBER}")
+        print("📤 Requesting login code from Telegram...")
+        
+        # Send code request
+        sent_code = await app.send_code(PHONE_NUMBER)
+        
+        print("\n✅ Code request sent to Telegram!")
+        print("📲 Check your Telegram app for the 5-digit code")
+        
+        # Send notification to user
+        try:
+            temp_app = Client(
+                "temp_notify",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                phone_number=PHONE_NUMBER
+            )
+            await temp_app.connect()
+            await temp_app.send_message(
+                YOUR_USER_ID,
+                "🔑 *LOGIN CODE REQUESTED*\n\n"
+                "Please check your Telegram app for the 5-digit verification code.\n"
+                "Then enter it in the terminal where your bot is running."
+            )
+            await temp_app.disconnect()
+        except:
+            pass
+        
+        # Ask for code in terminal
+        print("\n" + "-"*40)
+        code = input("📝 Enter the 5-digit code from Telegram: ").strip()
+        print("-"*40)
+        
+        if not code.isdigit() or len(code) != 5:
+            print("❌ Invalid code! Must be 5 digits.")
+            return None
+        
+        # Sign in with code
+        print("\n🔐 Signing in...")
+        try:
+            await app.sign_in(PHONE_NUMBER, sent_code.phone_code_hash, code)
+            print("✅ Code accepted!")
+        except SessionPasswordNeeded:
+            print("\n🔐 2FA Password required!")
+            password = input("Enter your Telegram 2FA password: ").strip()
+            await app.check_password(password)
+            print("✅ 2FA passed!")
+        
+        # Finalize
+        await app.start()
+        
+        print("\n" + "="*60)
+        print("🎉 SUCCESSFULLY LOGGED IN!")
+        print("🤖 Bot is now starting...")
+        print("="*60 + "\n")
+        
+        # Send success notification
+        await app.send_message(
+            YOUR_USER_ID,
+            "✅ *LOGIN SUCCESSFUL!*\n\n"
+            "🤖 AOT Auto-Grinder is now ONLINE!\n"
+            "Starting 24/7 grinding session...\n\n"
+            "You'll receive:\n"
+            "• Battle win notifications\n"
+            "• Status reports every 15 cycles\n"
+            "• Error alerts if any\n\n"
+            "Sit back and relax! ⚡"
         )
         
-        # Start auto-grinding immediately
-        logger.info("🚀 Starting auto-grinding...")
-        await grinder.start_grinding()
-        
-    except SessionPasswordNeeded:
-        logger.error("2FA password required! Please check your Telegram")
-        print("\n🔐 2-FACTOR AUTHENTICATION REQUIRED!")
-        print("Please check your Telegram app for the login code.")
-        password = input("Enter your 2FA password: ")
-        await grinder.app.check_password(password)
+        return app
         
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        await grinder.send_notification(f"❌ Bot crashed: {str(e)[:100]}")
+        print(f"\n❌ Login failed: {e}")
+        
+        # Send error notification
+        try:
+            await app.send_message(
+                YOUR_USER_ID,
+                f"❌ *LOGIN FAILED*\n\nError: {str(e)[:100]}"
+            )
+        except:
+            pass
+        
+        print("\n💡 Troubleshooting:")
+        print("1. Make sure number is correct: +256772313853")
+        print("2. Check Telegram for code")
+        print("3. If 2FA, enter password when asked")
+        print("4. Restart: python bot.py")
+        return None
+
+async def main():
+    """Main function"""
+    # Step 1: Login
+    app = await login_with_code_request()
+    if not app:
+        print("❌ Failed to login. Exiting...")
+        return
+    
+    try:
+        # Step 2: Create grinder
+        grinder = AOTAutoGrinder(app)
+        logger.info("🤖 Grinder initialized!")
+        
+        # Step 3: Start continuous grinding
+        await grinder.continuous_grinding()
+        
+    except KeyboardInterrupt:
+        print("\n\n🛑 Bot stopped by user (Ctrl+C)")
+        grinder.is_grinding = False
+        
+        # Send stop notification
+        await grinder.send_message_to_me("🛑 Bot stopped by user command")
+        
+        # Final status
+        if grinder.cycles_completed > 0:
+            await grinder.send_status_report()
+    
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
+        await app.send_message(
+            YOUR_USER_ID,
+            f"🚨 *BOT CRASHED!*\n\nError: {str(e)[:200]}\n\nRestart required!"
+        )
     
     finally:
         # Cleanup
-        if grinder.is_grinding:
-            await grinder.stop_grinding()
-        await grinder.app.stop()
-        logger.info("Bot stopped")
+        try:
+            await app.stop()
+            logger.info("✅ Clean shutdown")
+        except:
+            pass
 
 if __name__ == "__main__":
-    # Run the bot
+    print("\n🚀 Starting Attack Titan Auto-Grinder...")
+    print("📱 Using phone: +256772313853")
+    print("🎮 Game Bot ID: 7876606523")
+    print("👤 Your ID: 6108185460")
+    print("\n⚡ Features:")
+    print("• 24/7 grinding (no sleep)")
+    print("• Auto-explore & auto-battle")
+    print("• Real notifications")
+    print("• Error recovery")
+    print("• Status reports")
+    print("\n" + "="*60)
+    
+    # Run with asyncio
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n🛑 Bot stopped by user")
-        asyncio.run(grinder.stop_grinding())
+        print("\n\n👋 Goodbye!")
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {e}")

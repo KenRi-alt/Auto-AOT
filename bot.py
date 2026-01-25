@@ -18,38 +18,26 @@ from telegram import (
     Chat,
     Message,
     MessageEntity,
-    Poll,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
-    KeyboardButton,
-    WebAppInfo,
-    MenuButton,
-    MenuButtonCommands,
-    Bot,
-    InputFile
+    Poll
 )
 from telegram.ext import (
     Application,
-    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     ContextTypes,
     CallbackQueryHandler,
     ChatMemberHandler,
     PollHandler,
-    filters,
-    CallbackContext,
-    JobQueue
+    filters
 )
-from telegram.constants import ParseMode, ChatAction, ChatType, ChatMemberStatus, MessageEntityType, PollType
+from telegram.constants import ParseMode, ChatAction, ChatType, ChatMemberStatus, MessageEntityType
 
 # ========== CONFIGURATION ==========
 BOT_TOKEN = "8595078591:AAGvR4NQEhmNbphFGPcJFP2tDq1LYN5M66c"
 OWNER_ID = 6108185460
 BOT_USERNAME = "@Spam_protectBot"
-LOG_CHANNEL = -1003662720845  # Your log channel
+LOG_CHANNEL = -1003662720845
 ADMIN_PASSWORD = "admin2024"
-BACKUP_CHANNEL = -1003662720845  # Same as log for backup
 # ===================================
 
 logging.basicConfig(
@@ -64,14 +52,13 @@ logger = logging.getLogger(__name__)
 
 class UltimateEnterpriseBot:
     def __init__(self):
-        # Initialize data structures
-        self.groups: Dict[int, dict] = {}
-        self.users: Dict[int, dict] = {}
-        self.warnings: Dict[Tuple[int, int], List[dict]] = defaultdict(list)
-        self.mutes: Dict[Tuple[int, int], datetime] = {}
-        self.bans: Set[Tuple[int, int]] = set()
-        self.reports: Dict[Tuple[int, int], List[dict]] = defaultdict(list)
-        self.broadcasts: Dict[str, dict] = {}
+        self.groups = {}
+        self.users = {}
+        self.warnings = defaultdict(list)
+        self.mutes = {}
+        self.bans = set()
+        self.reports = defaultdict(list)
+        self.broadcasts = {}
         self.stats = {
             'total_messages': 0,
             'total_groups': 0,
@@ -79,12 +66,11 @@ class UltimateEnterpriseBot:
             'total_warnings': 0,
             'total_mutes': 0,
             'total_bans': 0,
-            'start_time': datetime.now(),
-            'uptime': '0'
+            'start_time': datetime.now()
         }
         
         # Anti-spam systems
-        self.flood_data: Dict[Tuple[int, int], dict] = {}
+        self.flood_data = {}
         self.spam_patterns = [
             r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
             r'[0-9]{10,}',
@@ -94,18 +80,21 @@ class UltimateEnterpriseBot:
             r'(?i)(click|link|website|url|visit|join|register|signup)[\s\S]{0,50}(here|now|today)',
         ]
         
-        # Scheduled jobs
-        self.jobs = {}
+        # Security settings
+        self.security_settings = {
+            'max_warnings': 3,
+            'mute_duration': 300,
+            'ban_duration': 86400,
+            'flood_threshold': 5,
+            'flood_timeframe': 5,
+            'anti_link': True,
+            'anti_spam': True,
+            'anti_flood': True,
+            'anti_caps': True,
+            'anti_repetition': True
+        }
         
-        # Cache
-        self.admin_cache: Dict[Tuple[int, int], Tuple[bool, datetime]] = {}
-        self.user_cache: Dict[int, dict] = {}
-        
-        # Broadcast system
-        self.broadcast_queue = asyncio.Queue()
-        self.active_broadcasts: Dict[str, dict] = {}
-        
-        logger.info("Ultimate Enterprise Bot v5.0 Initialized")
+        logger.info("Ultimate Enterprise Bot Initialized")
     
     # ========== LOGGING SYSTEM ==========
     
@@ -145,518 +134,79 @@ class UltimateEnterpriseBot:
                 log_message += f"📝 *Reason:* {data['reason']}\n"
             if 'details' in data:
                 log_message += f"🔍 *Details:* {data['details']}\n"
-            if 'duration' in data:
-                log_message += f"⏱️ *Duration:* {data['duration']}\n"
-            if 'count' in data:
-                log_message += f"🔢 *Count:* {data['count']}\n"
             
             log_message += f"\n`{json.dumps(data, indent=2, default=str)}`"
             
             # Send to log channel
-            bot = self.get_bot()
-            if bot:
-                await bot.send_message(
-                    chat_id=LOG_CHANNEL,
-                    text=log_message,
-                    parse_mode=ParseMode.MARKDOWN,
-                    disable_web_page_preview=True
-                )
-                
-            # Also log to file
+            await self.application.bot.send_message(
+                chat_id=LOG_CHANNEL,
+                text=log_message,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True
+            )
+            
             logger.info(f"[{level}] {log_type}: {data}")
             
         except Exception as e:
             logger.error(f"Failed to log to channel: {e}")
     
-    async def log_action(self, chat_id: int, user_id: int, action: str, reason: str = "", details: str = ""):
-        """Log an action"""
-        chat_title = self.groups.get(chat_id, {}).get('title', 'Unknown')
-        user_info = self.users.get(user_id, {})
-        username = user_info.get('username', 'Unknown')
+    # ========== SECURITY TIGHTENING ==========
+    
+    async def security_check(self, chat_id: int, user_id: int, message_text: str) -> Dict:
+        """Comprehensive security check"""
+        threats = []
         
-        log_data = {
-            'chat': f"{chat_title} ({chat_id})",
-            'user': f"@{username} ({user_id})",
-            'action': action,
-            'reason': reason,
-            'details': details,
-            'timestamp': datetime.now().isoformat()
+        # 1. Flood check
+        flood_result = await self.check_flood(chat_id, user_id)
+        if flood_result['detected']:
+            threats.append(('FLOOD', flood_result))
+        
+        # 2. Spam pattern check
+        spam_result = await self.check_spam_patterns(message_text)
+        if spam_result['detected']:
+            threats.append(('SPAM', spam_result))
+        
+        # 3. Link check
+        link_result = await self.check_links(message_text)
+        if link_result['detected']:
+            threats.append(('LINK', link_result))
+        
+        # 4. Caps check
+        caps_result = await self.check_caps(message_text)
+        if caps_result['detected']:
+            threats.append(('CAPS', caps_result))
+        
+        # 5. Repetition check
+        rep_result = await self.check_repetition(chat_id, user_id, message_text)
+        if rep_result['detected']:
+            threats.append(('REPETITION', rep_result))
+        
+        return {
+            'threats': threats,
+            'total_score': sum(t[1]['score'] for t in threats),
+            'threat_count': len(threats)
         }
-        
-        await self.log_to_channel(f"ACTION_{action.upper()}", log_data, action.upper())
     
-    async def log_security(self, chat_id: int, threat_type: str, user_id: int = None, details: str = ""):
-        """Log security event"""
-        chat_title = self.groups.get(chat_id, {}).get('title', 'Unknown')
-        
-        log_data = {
-            'chat': f"{chat_title} ({chat_id})",
-            'threat': threat_type,
-            'details': details,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        if user_id:
-            user_info = self.users.get(user_id, {})
-            username = user_info.get('username', 'Unknown')
-            log_data['user'] = f"@{username} ({user_id})"
-        
-        await self.log_to_channel(f"SECURITY_{threat_type}", log_data, "SECURITY")
-    
-    async def log_broadcast(self, broadcast_id: str, status: str, sent: int, failed: int):
-        """Log broadcast activity"""
-        log_data = {
-            'broadcast_id': broadcast_id,
-            'status': status,
-            'sent': sent,
-            'failed': failed,
-            'total': sent + failed,
-            'success_rate': f"{(sent/(sent+failed)*100):.1f}%" if sent+failed > 0 else "0%",
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        await self.log_to_channel("BROADCAST_REPORT", log_data, "BROADCAST")
-    
-    # ========== BROADCAST SYSTEM ==========
-    
-    async def broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Ultimate broadcast system with buttons"""
-        if update.effective_user.id != OWNER_ID:
-            await update.message.reply_text("🚫 Owner only command!")
-            return
-        
-        if not context.args:
-            # Show broadcast panel
-            keyboard = [
-                [
-                    InlineKeyboardButton("📢 Text Broadcast", callback_data="broadcast_text"),
-                    InlineKeyboardButton("🖼️ Media Broadcast", callback_data="broadcast_media")
-                ],
-                [
-                    InlineKeyboardButton("🎯 Target Groups", callback_data="broadcast_groups"),
-                    InlineKeyboardButton("👥 Target Users", callback_data="broadcast_users")
-                ],
-                [
-                    InlineKeyboardButton("📊 Broadcast Stats", callback_data="broadcast_stats"),
-                    InlineKeyboardButton("📋 Recent Broadcasts", callback_data="broadcast_recent")
-                ],
-                [
-                    InlineKeyboardButton("⚙️ Settings", callback_data="broadcast_settings"),
-                    InlineKeyboardButton("🚀 Quick Send", callback_data="broadcast_quick")
-                ]
-            ]
-            
-            text = """
-🎬 *ULTIMATE BROADCAST SYSTEM*
-
-*Available Targets:*
-• All Groups ({group_count})
-• All Users ({user_count})
-• Specific Groups
-• Specific Users
-• By Language
-• By Activity
-
-*Message Types:*
-• Text with formatting
-• Media (Photo/Video)
-• Polls
-• Buttons (Inline/Reply)
-• Scheduled Messages
-
-*Statistics:*
-• Success Rate: 99.8%
-• Average Delivery: 2.3s
-• Last Broadcast: {last_broadcast}
-
-Select an option to begin:
-            """.format(
-                group_count=len(self.groups),
-                user_count=len(self.users),
-                last_broadcast=self.stats.get('last_broadcast', 'Never')
-            )
-            
-            await update.message.reply_text(
-                text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
-        
-        # Quick broadcast
-        message = ' '.join(context.args)
-        await self.start_broadcast(update, message)
-    
-    async def start_broadcast(self, update: Update, message: str, media_type: str = None, media_file: str = None):
-        """Start a broadcast"""
-        broadcast_id = f"broadcast_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{random.randint(1000, 9999)}"
-        
-        # Create broadcast data
-        broadcast = {
-            'id': broadcast_id,
-            'message': message,
-            'media_type': media_type,
-            'media_file': media_file,
-            'status': 'preparing',
-            'target_groups': list(self.groups.keys()),
-            'target_users': [],
-            'sent': 0,
-            'failed': 0,
-            'start_time': datetime.now(),
-            'end_time': None,
-            'created_by': update.effective_user.id
-        }
-        
-        self.active_broadcasts[broadcast_id] = broadcast
-        
-        # Show broadcast options
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Add Buttons", callback_data=f"broadcast_add_buttons_{broadcast_id}"),
-                InlineKeyboardButton("🎯 Target Settings", callback_data=f"broadcast_target_{broadcast_id}")
-            ],
-            [
-                InlineKeyboardButton("⏰ Schedule", callback_data=f"broadcast_schedule_{broadcast_id}"),
-                InlineKeyboardButton("📊 Preview", callback_data=f"broadcast_preview_{broadcast_id}")
-            ],
-            [
-                InlineKeyboardButton("🚀 Send Now", callback_data=f"broadcast_send_{broadcast_id}"),
-                InlineKeyboardButton("❌ Cancel", callback_data=f"broadcast_cancel_{broadcast_id}")
-            ]
-        ]
-        
-        preview_text = f"""
-📤 *BROADCAST PREVIEW*
-
-*Message:*
-{message[:200]}{'...' if len(message) > 200 else ''}
-
-*Targets:*
-• Groups: {len(broadcast['target_groups'])}
-• Users: {len(broadcast['target_users'])}
-
-*Settings:*
-• Media: {media_type or 'None'}
-• Buttons: Not configured
-• Schedule: Immediate
-
-*Estimated Reach:* {len(broadcast['target_groups'])} groups
-*ID:* `{broadcast_id}`
-        """
-        
-        await update.message.reply_text(
-            preview_text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        
-        # Log broadcast creation
-        await self.log_broadcast(broadcast_id, "CREATED", 0, 0)
-    
-    async def execute_broadcast(self, broadcast_id: str):
-        """Execute a broadcast"""
-        if broadcast_id not in self.active_broadcasts:
-            return
-        
-        broadcast = self.active_broadcasts[broadcast_id]
-        broadcast['status'] = 'sending'
-        
-        sent = 0
-        failed = 0
-        
-        # Send to groups
-        for chat_id in broadcast['target_groups']:
-            try:
-                if broadcast['media_type']:
-                    # Send media broadcast
-                    if broadcast['media_type'] == 'photo':
-                        await self.application.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=broadcast['media_file'] if broadcast['media_file'] else None,
-                            caption=broadcast['message'],
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                    elif broadcast['media_type'] == 'video':
-                        await self.application.bot.send_video(
-                            chat_id=chat_id,
-                            video=broadcast['media_file'] if broadcast['media_file'] else None,
-                            caption=broadcast['message'],
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                else:
-                    # Send text broadcast
-                    await self.application.bot.send_message(
-                        chat_id=chat_id,
-                        text=broadcast['message'],
-                        parse_mode=ParseMode.MARKDOWN,
-                        disable_web_page_preview=True
-                    )
-                
-                sent += 1
-                
-                # Rate limiting
-                await asyncio.sleep(0.1)
-                
-            except Exception as e:
-                failed += 1
-                logger.error(f"Failed to send broadcast to {chat_id}: {e}")
-        
-        # Update broadcast status
-        broadcast['status'] = 'completed'
-        broadcast['sent'] = sent
-        broadcast['failed'] = failed
-        broadcast['end_time'] = datetime.now()
-        
-        # Log completion
-        await self.log_broadcast(broadcast_id, "COMPLETED", sent, failed)
-        
-        # Send completion report to owner
-        duration = (broadcast['end_time'] - broadcast['start_time']).total_seconds()
-        
-        report = f"""
-✅ *BROADCAST COMPLETED*
-
-*ID:* `{broadcast_id}`
-*Duration:* {duration:.1f} seconds
-*Speed:* {(sent/duration):.1f} messages/second
-
-*Results:*
-• ✅ Sent: {sent}
-• ❌ Failed: {failed}
-• 📊 Success Rate: {(sent/(sent+failed)*100):.1f}%
-
-*Details:*
-• Target: Groups only
-• Message Type: {'Media' if broadcast['media_type'] else 'Text'}
-• Character Count: {len(broadcast['message'])}
-        """
-        
-        await self.application.bot.send_message(
-            chat_id=OWNER_ID,
-            text=report,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    async def broadcast_to_groups_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Broadcast specifically to groups"""
-        if update.effective_user.id != OWNER_ID:
-            return
-        
-        if not context.args:
-            await update.message.reply_text(
-                "Usage: `/broadcastgroups message`\n"
-                "Example: `/broadcastgroups Hello all groups!`",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-        
-        message = ' '.join(context.args)
-        broadcast_id = f"groups_{datetime.now().strftime('%H%M%S')}"
-        
-        # Create groups-only broadcast
-        broadcast = {
-            'id': broadcast_id,
-            'message': message,
-            'target': 'groups',
-            'groups': list(self.groups.keys()),
-            'status': 'sending',
-            'progress': 0,
-            'total': len(self.groups),
-            'start_time': datetime.now()
-        }
-        
-        self.active_broadcasts[broadcast_id] = broadcast
-        
-        # Start sending
-        asyncio.create_task(self.send_groups_broadcast(broadcast_id))
-        
-        await update.message.reply_text(
-            f"🚀 *Starting Groups Broadcast*\n\n"
-            f"*ID:* `{broadcast_id}`\n"
-            f"*Target:* {len(self.groups)} groups\n"
-            f"*Status:* Initializing...\n\n"
-            f"Check logs for progress.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    async def send_groups_broadcast(self, broadcast_id: str):
-        """Send broadcast to all groups"""
-        broadcast = self.active_broadcasts[broadcast_id]
-        sent = 0
-        
-        for chat_id in broadcast['groups']:
-            try:
-                await self.application.bot.send_message(
-                    chat_id=chat_id,
-                    text=broadcast['message'],
-                    parse_mode=ParseMode.MARKDOWN,
-                    disable_web_page_preview=True
-                )
-                sent += 1
-                broadcast['progress'] = sent
-                
-                # Update progress every 10 messages
-                if sent % 10 == 0:
-                    progress = (sent / broadcast['total']) * 100
-                    logger.info(f"Broadcast {broadcast_id}: {sent}/{broadcast['total']} ({progress:.1f}%)")
-                
-                # Rate limit
-                await asyncio.sleep(0.2)
-                
-            except Exception as e:
-                logger.error(f"Failed to send to group {chat_id}: {e}")
-        
-        # Complete
-        broadcast['status'] = 'completed'
-        broadcast['end_time'] = datetime.now()
-        duration = (broadcast['end_time'] - broadcast['start_time']).total_seconds()
-        
-        # Log completion
-        await self.log_broadcast(broadcast_id, "GROUPS_COMPLETED", sent, broadcast['total'] - sent)
-        
-        # Send report
-        report = f"""
-📊 *GROUPS BROADCAST REPORT*
-
-*Broadcast ID:* `{broadcast_id}`
-*Duration:* {duration:.1f}s
-*Speed:* {(sent/duration):.1f} msg/s
-
-*Results:*
-• 📨 Sent: {sent}
-• ❌ Failed: {broadcast['total'] - sent}
-• ✅ Success Rate: {(sent/broadcast['total']*100):.1f}%
-
-*Performance:*
-• Start Time: {broadcast['start_time'].strftime('%H:%M:%S')}
-• End Time: {broadcast['end_time'].strftime('%H:%M:%S')}
-• Total Time: {duration:.1f} seconds
-        """
-        
-        await self.application.bot.send_message(
-            chat_id=OWNER_ID,
-            text=report,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    # ========== ADVANCED ANTI-SPAM ==========
-    
-    async def advanced_anti_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Advanced anti-spam with multiple layers"""
-        message = update.message
-        chat = update.effective_chat
-        user = update.effective_user
-        
-        # Skip if not a group
-        if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            return
-        
-        # Initialize group if not exists
-        if chat.id not in self.groups:
-            self.groups[chat.id] = {
-                'title': chat.title,
-                'members': await chat.get_member_count(),
-                'settings': {
-                    'antispam': True,
-                    'antiflood': True,
-                    'antilink': False,
-                    'warn_limit': 3
-                },
-                'stats': {
-                    'messages': 0,
-                    'warnings': 0,
-                    'mutes': 0
-                },
-                'created': datetime.now(),
-                'last_active': datetime.now()
-            }
-        
-        # Update stats
-        self.groups[chat.id]['stats']['messages'] += 1
-        self.groups[chat.id]['last_active'] = datetime.now()
-        self.stats['total_messages'] += 1
-        
-        # Check if user exists
-        if user.id not in self.users:
-            self.users[user.id] = {
-                'username': user.username,
-                'first_name': user.first_name,
-                'last_name': user.last_name,
-                'is_bot': user.is_bot,
-                'messages': 0,
-                'warnings': 0,
-                'join_date': datetime.now(),
-                'last_seen': datetime.now()
-            }
-        
-        self.users[user.id]['messages'] += 1
-        self.users[user.id]['last_seen'] = datetime.now()
-        
-        # Check if anti-spam is enabled
-        if not self.groups[chat.id]['settings']['antispam']:
-            return
-        
-        # Check if user is admin (skip spam check)
-        try:
-            member = await chat.get_member(user.id)
-            if member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                return
-        except:
-            pass
-        
-        # Run all spam checks
-        checks = [
-            self.check_flood(chat.id, user.id),
-            self.check_spam_patterns(message.text or ""),
-            self.check_links(message.text or ""),
-            self.check_caps(message.text or ""),
-            self.check_repetition(chat.id, user.id, message.text or "")
-        ]
-        
-        results = await asyncio.gather(*checks)
-        
-        # Process results
-        for check_name, result in results:
-            if result['detected']:
-                await self.handle_spam_detection(
-                    chat, user, message, 
-                    check_name, result['score'], result['details']
-                )
-                
-                # Log security event
-                await self.log_security(
-                    chat.id,
-                    f"SPAM_{check_name.upper()}",
-                    user.id,
-                    f"Score: {result['score']}, Details: {result['details']}"
-                )
-                
-                # Delete spam message
-                try:
-                    await message.delete()
-                except:
-                    pass
-                
-                break  # Stop after first detection
-    
-    async def check_flood(self, chat_id: int, user_id: int) -> Tuple[str, dict]:
-        """Check for message flooding"""
-        key = (chat_id, user_id)
+    async def check_flood(self, chat_id: int, user_id: int) -> Dict:
+        """Enhanced flood detection"""
+        key = f"{chat_id}_{user_id}"
         
         if key not in self.flood_data:
             self.flood_data[key] = {
                 'count': 0,
                 'last_time': datetime.now(),
-                'messages': []
+                'messages': [],
+                'score': 0
             }
         
         data = self.flood_data[key]
         now = datetime.now()
         time_diff = (now - data['last_time']).seconds
         
-        # Reset if 10 seconds passed
-        if time_diff > 10:
+        # Reset after configured timeframe
+        if time_diff > self.security_settings['flood_timeframe']:
             data['count'] = 0
+            data['score'] = max(0, data['score'] - 10)
             data['messages'] = []
         
         data['count'] += 1
@@ -669,24 +219,25 @@ Select an option to begin:
         
         # Calculate flood score
         score = 0
-        details = ""
         
-        if data['count'] >= 10 and time_diff < 5:
+        if data['count'] >= self.security_settings['flood_threshold'] * 2 and time_diff < self.security_settings['flood_timeframe']:
             score = 100
-            details = f"Severe flood: {data['count']} messages in {time_diff}s"
-        elif data['count'] >= 7 and time_diff < 5:
+        elif data['count'] >= self.security_settings['flood_threshold'] + 2 and time_diff < self.security_settings['flood_timeframe']:
             score = 70
-            details = f"Heavy flood: {data['count']} messages in {time_diff}s"
-        elif data['count'] >= 5 and time_diff < 5:
+        elif data['count'] >= self.security_settings['flood_threshold'] and time_diff < self.security_settings['flood_timeframe']:
             score = 50
-            details = f"Moderate flood: {data['count']} messages in {time_diff}s"
         
-        return ('flood', {'detected': score > 40, 'score': score, 'details': details})
+        data['score'] += score
+        
+        detected = score >= 50
+        details = f"Flood: {data['count']} messages in {time_diff}s (Score: {data['score']})"
+        
+        return {'detected': detected, 'score': score, 'details': details}
     
-    async def check_spam_patterns(self, text: str) -> Tuple[str, dict]:
-        """Check for spam patterns"""
+    async def check_spam_patterns(self, text: str) -> Dict:
+        """Enhanced spam pattern detection"""
         if not text:
-            return ('patterns', {'detected': False, 'score': 0, 'details': ''})
+            return {'detected': False, 'score': 0, 'details': ''}
         
         score = 0
         detected_patterns = []
@@ -695,122 +246,184 @@ Select an option to begin:
             matches = re.findall(pattern, text, re.IGNORECASE)
             if matches:
                 detected_patterns.append(f"Pattern_{i}")
-                score += len(matches) * 20
+                score += len(matches) * 25
         
-        detected = score > 40
-        details = f"Patterns: {', '.join(detected_patterns)}" if detected_patterns else ""
+        detected = score > 30
+        details = f"Spam patterns: {', '.join(detected_patterns[:3])}" if detected_patterns else ""
         
-        return ('patterns', {'detected': detected, 'score': score, 'details': details})
+        return {'detected': detected, 'score': score, 'details': details}
     
-    async def check_links(self, text: str) -> Tuple[str, dict]:
-        """Check for suspicious links"""
-        if not text:
-            return ('links', {'detected': False, 'score': 0, 'details': ''})
+    async def check_links(self, text: str) -> Dict:
+        """Enhanced link detection"""
+        if not text or not self.security_settings['anti_link']:
+            return {'detected': False, 'score': 0, 'details': ''}
         
-        # Simple link detection
         url_pattern = r'https?://[^\s]+'
         urls = re.findall(url_pattern, text)
         
         if not urls:
-            return ('links', {'detected': False, 'score': 0, 'details': ''})
+            return {'detected': False, 'score': 0, 'details': ''}
         
-        score = len(urls) * 30
-        detected = score > 50
-        details = f"Found {len(urls)} URLs" if urls else ""
+        # Check for suspicious domains
+        suspicious_domains = ['bit.ly', 'tinyurl.com', 'shortener', 'spam', 'malware', 'phishing']
+        suspicious_count = 0
         
-        return ('links', {'detected': detected, 'score': score, 'details': details})
+        for url in urls:
+            if any(domain in url.lower() for domain in suspicious_domains):
+                suspicious_count += 1
+        
+        score = len(urls) * 20 + suspicious_count * 30
+        detected = score > 40
+        details = f"Links: {len(urls)} total, {suspicious_count} suspicious"
+        
+        return {'detected': detected, 'score': score, 'details': details}
     
-    async def check_caps(self, text: str) -> Tuple[str, dict]:
-        """Check for excessive caps"""
-        if not text or len(text) < 10:
-            return ('caps', {'detected': False, 'score': 0, 'details': ''})
+    async def check_caps(self, text: str) -> Dict:
+        """Enhanced caps detection"""
+        if not text or len(text) < 10 or not self.security_settings['anti_caps']:
+            return {'detected': False, 'score': 0, 'details': ''}
         
         caps_count = sum(1 for c in text if c.isupper())
         total_chars = len([c for c in text if c.isalpha()])
         
         if total_chars == 0:
-            return ('caps', {'detected': False, 'score': 0, 'details': ''})
+            return {'detected': False, 'score': 0, 'details': ''}
         
         caps_ratio = caps_count / total_chars
         score = int(caps_ratio * 100) if caps_ratio > 0.6 else 0
         detected = caps_ratio > 0.7
-        details = f"Caps ratio: {caps_ratio:.1%}" if detected else ""
+        details = f"Caps ratio: {caps_ratio:.1%} ({caps_count}/{total_chars})"
         
-        return ('caps', {'detected': detected, 'score': score, 'details': details})
+        return {'detected': detected, 'score': score, 'details': details}
     
-    async def check_repetition(self, chat_id: int, user_id: int, text: str) -> Tuple[str, dict]:
-        """Check for message repetition"""
-        if not text or len(text) < 5:
-            return ('repetition', {'detected': False, 'score': 0, 'details': ''})
+    async def check_repetition(self, chat_id: int, user_id: int, text: str) -> Dict:
+        """Enhanced repetition detection"""
+        if not text or len(text) < 5 or not self.security_settings['anti_repetition']:
+            return {'detected': False, 'score': 0, 'details': ''}
         
         key = f"recent_{chat_id}_{user_id}"
-        if key not in self.user_cache:
-            self.user_cache[key] = []
+        if key not in self.flood_data:
+            self.flood_data[key] = {'messages': []}
         
-        recent_messages = self.user_cache[key]
+        recent_messages = self.flood_data[key]['messages']
         
-        # Check if current message is similar to recent ones
+        # Check for repetition
         score = 0
+        repetition_count = 0
+        
         for msg in recent_messages[-5:]:
-            if text in msg or msg in text:
+            if text == msg or (len(text) > 10 and text in msg) or (len(msg) > 10 and msg in text):
+                repetition_count += 1
                 score += 40
         
-        detected = score > 50
-        details = f"Similar to {len([m for m in recent_messages if text in m or m in text])} recent messages"
+        detected = repetition_count >= 2
+        details = f"Repetition: {repetition_count} similar messages"
         
-        # Add current message to cache
+        # Store current message
         recent_messages.append(text)
         if len(recent_messages) > 10:
             recent_messages.pop(0)
         
-        self.user_cache[key] = recent_messages
+        self.flood_data[key]['messages'] = recent_messages
         
-        return ('repetition', {'detected': detected, 'score': score, 'details': details})
+        return {'detected': detected, 'score': score, 'details': details}
     
-    async def handle_spam_detection(self, chat: Chat, user: ChatMember, message: Message, 
-                                   check_name: str, score: int, details: str):
-        """Handle detected spam"""
-        # Add warning
-        warning_key = (chat.id, user.id)
-        self.warnings[warning_key].append({
-            'type': check_name,
-            'score': score,
-            'details': details,
-            'time': datetime.now(),
-            'message': message.text[:100] if message.text else ""
-        })
+    async def handle_security_threat(self, chat: Chat, user: ChatMember, message: Message, security_result: Dict):
+        """Handle security threats with graduated response"""
+        if not security_result['threats']:
+            return
         
+        # Get user's warning history
+        warning_key = (chat.id, user.id)
+        warning_count = len(self.warnings.get(warning_key, []))
+        
+        # Determine action based on threat level
+        total_score = security_result['total_score']
+        
+        if total_score >= 100 or warning_count >= self.security_settings['max_warnings']:
+            # Severe threat - immediate mute
+            await self.mute_user(chat, user.id, self.security_settings['mute_duration'], "Severe security threat")
+            await self.delete_message(message)
+            
+            # Log action
+            await self.log_to_channel(
+                "AUTO_MUTE",
+                {
+                    'chat': chat.title,
+                    'user': f"@{user.username}" if user.username else user.first_name,
+                    'action': 'AUTO_MUTE',
+                    'reason': 'Severe security threat',
+                    'details': f"Score: {total_score}, Threats: {security_result['threat_count']}",
+                    'duration': f"{self.security_settings['mute_duration']}s"
+                },
+                "SECURITY"
+            )
+            
+        elif total_score >= 70:
+            # High threat - warning and message deletion
+            await self.issue_warning(chat, user, message, security_result)
+            await self.delete_message(message)
+            
+        elif total_score >= 40:
+            # Medium threat - warning only
+            await self.issue_warning(chat, user, message, security_result)
+    
+    async def delete_message(self, message: Message):
+        """Delete a message with error handling"""
+        try:
+            await message.delete()
+        except Exception as e:
+            logger.error(f"Failed to delete message: {e}")
+    
+    async def issue_warning(self, chat: Chat, user: ChatMember, message: Message, security_result: Dict):
+        """Issue a warning to user"""
+        warning_key = (chat.id, user.id)
+        
+        # Add warning to history
+        warning_data = {
+            'time': datetime.now(),
+            'score': security_result['total_score'],
+            'threats': [t[0] for t in security_result['threats']],
+            'message': message.text[:100] if message.text else ""
+        }
+        
+        self.warnings[warning_key].append(warning_data)
         warning_count = len(self.warnings[warning_key])
         
         # Send warning message
         warning_msg = await chat.send_message(
-            f"⚠️ *SPAM DETECTED*\n\n"
+            f"⚠️ *SECURITY WARNING #{warning_count}*\n\n"
             f"*User:* {user.mention_html()}\n"
-            f"*Type:* {check_name.upper()}\n"
-            f"*Score:* {score}/100\n"
-            f"*Warning:* {warning_count}/3\n"
-            f"*Details:* {details}\n\n"
-            f"⚠️ *{3 - warning_count} warnings remaining*",
+            f"*Threat Level:* {security_result['total_score']}/100\n"
+            f"*Detected:* {', '.join([t[0] for t in security_result['threats'][:3]])}\n"
+            f"*Status:* {warning_count}/{self.security_settings['max_warnings']} warnings\n\n"
+            f"⚠️ *{self.security_settings['max_warnings'] - warning_count} warnings remaining*",
             parse_mode=ParseMode.HTML
         )
         
-        # Auto-mute on 3rd warning
-        if warning_count >= 3:
-            await asyncio.sleep(2)
-            await self.mute_user(chat, user.id, 300, "3 spam warnings")
-            
-            # Clear warnings after mute
-            self.warnings[warning_key] = []
-        
-        # Delete warning after 30 seconds
+        # Auto-delete warning after 30 seconds
         await asyncio.sleep(30)
         try:
             await warning_msg.delete()
         except:
             pass
+        
+        # Log warning
+        await self.log_to_channel(
+            "WARNING_ISSUED",
+            {
+                'chat': chat.title,
+                'user': f"@{user.username}" if user.username else user.first_name,
+                'action': 'WARNING',
+                'count': warning_count,
+                'score': security_result['total_score'],
+                'threats': [t[0] for t in security_result['threats']]
+            },
+            "WARNING"
+        )
     
     async def mute_user(self, chat: Chat, user_id: int, duration: int, reason: str):
-        """Mute a user"""
+        """Mute a user with enhanced permissions"""
         try:
             mute_until = datetime.now() + timedelta(seconds=duration)
             
@@ -831,27 +444,73 @@ Select an option to begin:
             
             # Store mute
             self.mutes[(chat.id, user_id)] = mute_until
-            self.stats['total_mutes'] += 1
             
-            # Send mute notification
+            # Send notification
             duration_str = f"{duration//60} minutes" if duration >= 60 else f"{duration} seconds"
             
-            await chat.send_message(
+            mute_msg = await chat.send_message(
                 f"🔇 *USER MUTED*\n\n"
                 f"*Duration:* {duration_str}\n"
                 f"*Reason:* {reason}\n"
-                f"*Appeal:* Contact admin",
+                f"*Action:* Automated Security System",
                 parse_mode=ParseMode.MARKDOWN
             )
             
-            # Log action
-            await self.log_action(
-                chat.id, user_id, "MUTE", 
-                reason, f"Duration: {duration_str}"
-            )
+            # Auto-delete notification
+            await asyncio.sleep(20)
+            try:
+                await mute_msg.delete()
+            except:
+                pass
             
         except Exception as e:
             logger.error(f"Failed to mute user {user_id}: {e}")
+    
+    # ========== MESSAGE HANDLER ==========
+    
+    async def message_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle all messages with security checks"""
+        message = update.message
+        chat = update.effective_chat
+        user = update.effective_user
+        
+        # Skip if not a group
+        if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+            return
+        
+        # Initialize group if not exists
+        if chat.id not in self.groups:
+            self.groups[chat.id] = {
+                'title': chat.title,
+                'members': await chat.get_member_count(),
+                'created': datetime.now(),
+                'last_active': datetime.now(),
+                'messages': 0
+            }
+        
+        # Update stats
+        self.groups[chat.id]['messages'] += 1
+        self.groups[chat.id]['last_active'] = datetime.now()
+        self.stats['total_messages'] += 1
+        
+        # Skip if user is admin
+        try:
+            member = await chat.get_member(user.id)
+            if member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                return
+        except:
+            pass
+        
+        # Run security check
+        security_result = await self.security_check(
+            chat.id, 
+            user.id, 
+            message.text or ""
+        )
+        
+        # Handle threats if any
+        if security_result['threats']:
+            await self.handle_security_threat(chat, user, message, security_result)
     
     # ========== COMMAND HANDLERS ==========
     
@@ -860,52 +519,37 @@ Select an option to begin:
         user = update.effective_user
         
         text = f"""
-🤖 *ULTIMATE ENTERPRISE BOT v5.0*
+🔐 *ULTIMATE SECURITY BOT*
 
 👤 *User:* {user.mention_html()}
 🆔 *ID:* `{user.id}`
-📅 *Joined:* {datetime.now().strftime('%Y-%m-%d %H:%M')}
+⚡ *Status:* Active & Secured
 
-🔐 *Enterprise Features:*
-• Advanced Anti-Spam AI
-• Real-time Security Monitoring
-• Professional Broadcast System
-• Group Management Tools
-• Analytics & Reporting
+🛡️ *Security Features:*
+• Multi-layer Anti-Spam
+• Real-time Threat Detection
 • Automated Moderation
+• Smart Flood Protection
+• Link & Pattern Filtering
 
-📊 *System Status:*
+📊 *System Stats:*
 • Groups Protected: {len(self.groups)}
 • Total Messages: {self.stats['total_messages']:,}
-• Uptime: {self.get_uptime()}
 • Security Level: MAXIMUM
 
-🚀 *Quick Start:*
-1. Add me to your group
-2. Grant admin permissions
-3. Use `/setup` to configure
-4. Access `/admin` for control
-
-💼 *Enterprise Support:* Contact admin
+🚀 *Add me to your group for protection!*
         """
         
-        keyboard = [
-            [
-                InlineKeyboardButton("➕ Add to Group", 
-                    url=f"http://t.me/{BOT_USERNAME.replace('@', '')}?startgroup=true"),
-                InlineKeyboardButton("⚙️ Admin Panel", callback_data="enterprise_admin")
-            ],
-            [
-                InlineKeyboardButton("📚 Documentation", callback_data="docs"),
-                InlineKeyboardButton("🔧 Support", callback_data="support")
-            ]
-        ]
+        keyboard = [[
+            InlineKeyboardButton("➕ Add to Group", 
+                url=f"http://t.me/{BOT_USERNAME.replace('@', '')}?startgroup=true"),
+            InlineKeyboardButton("⚙️ Admin Panel", callback_data="admin_panel")
+        ]]
         
         await update.message.reply_text(
             text,
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            disable_web_page_preview=True
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
     async def admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -915,39 +559,36 @@ Select an option to begin:
             return
         
         text = f"""
-👑 *OWNER ADMIN PANEL*
+👑 *SECURITY ADMIN PANEL*
 
-📊 *System Overview:*
+📊 *System Status:*
 • Groups: {len(self.groups)}
-• Users: {len(self.users)}
-• Messages: {self.stats['total_messages']:,}
-• Uptime: {self.get_uptime()}
+• Total Messages: {self.stats['total_messages']:,}
+• Warnings: {sum(len(w) for w in self.warnings.values())}
+• Mutes Active: {len([m for m in self.mutes.values() if m > datetime.now()])}
 
-🔐 *Security Status:*
-• Warnings: {self.stats['total_warnings']}
-• Mutes: {self.stats['total_mutes']}
-• Bans: {self.stats['total_bans']}
-• Threats Blocked: Calculating...
+🔐 *Security Settings:*
+• Max Warnings: {self.security_settings['max_warnings']}
+• Mute Duration: {self.security_settings['mute_duration']}s
+• Flood Threshold: {self.security_settings['flood_threshold']}
+• Anti-Link: {'✅ ON' if self.security_settings['anti_link'] else '❌ OFF'}
+• Anti-Spam: {'✅ ON' if self.security_settings['anti_spam'] else '❌ OFF'}
 
-🚀 *Quick Actions:*
+⚡ *Quick Actions:*
         """
         
         keyboard = [
             [
-                InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
-                InlineKeyboardButton("📊 Stats", callback_data="admin_stats")
+                InlineKeyboardButton("📊 View Stats", callback_data="view_stats"),
+                InlineKeyboardButton("⚙️ Settings", callback_data="security_settings")
             ],
             [
-                InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings"),
-                InlineKeyboardButton("🔍 Logs", callback_data="admin_logs")
+                InlineKeyboardButton("📢 Broadcast", callback_data="broadcast"),
+                InlineKeyboardButton("🔍 Logs", callback_data="view_logs")
             ],
             [
-                InlineKeyboardButton("💾 Backup", callback_data="admin_backup"),
-                InlineKeyboardButton("🔄 Restart", callback_data="admin_restart")
-            ],
-            [
-                InlineKeyboardButton("📋 Groups List", callback_data="admin_groups"),
-                InlineKeyboardButton("👥 Users List", callback_data="admin_users")
+                InlineKeyboardButton("🔄 Refresh", callback_data="refresh_admin"),
+                InlineKeyboardButton("❌ Close", callback_data="close_admin")
             ]
         ]
         
@@ -957,40 +598,121 @@ Select an option to begin:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
+    async def broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Broadcast command"""
+        if update.effective_user.id != OWNER_ID:
+            await update.message.reply_text("🚫 Owner only!")
+            return
+        
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: `/broadcast message`\n\n"
+                "*Example:*\n"
+                "`/broadcast *Important:* Server maintenance at 10 PM`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        
+        message = ' '.join(context.args)
+        group_count = len(self.groups)
+        
+        # Send to log channel first
+        await self.log_to_channel(
+            "BROADCAST_START",
+            {
+                'action': 'BROADCAST_START',
+                'groups': group_count,
+                'message_preview': message[:100]
+            },
+            "BROADCAST"
+        )
+        
+        # Send to groups
+        sent = 0
+        failed = 0
+        
+        for chat_id in self.groups.keys():
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode=ParseMode.MARKDOWN,
+                    disable_web_page_preview=True
+                )
+                sent += 1
+                
+                # Rate limiting
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                failed += 1
+                logger.error(f"Failed to send to {chat_id}: {e}")
+        
+        # Send completion report
+        report = f"""
+✅ *BROADCAST COMPLETED*
+
+*Results:*
+• ✅ Sent: {sent}
+• ❌ Failed: {failed}
+• 📊 Success Rate: {(sent/(sent+failed)*100):.1f}% ({sent}/{sent+failed})
+
+*Details:*
+• Target: All Groups ({group_count})
+• Message Length: {len(message)} characters
+• Time: {datetime.now().strftime('%H:%M:%S')}
+        """
+        
+        await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
+        
+        # Log completion
+        await self.log_to_channel(
+            "BROADCAST_COMPLETE",
+            {
+                'action': 'BROADCAST_COMPLETE',
+                'sent': sent,
+                'failed': failed,
+                'success_rate': f"{(sent/(sent+failed)*100):.1f}%",
+                'total_groups': group_count
+            },
+            "BROADCAST"
+        )
+    
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Statistics command"""
-        uptime = self.get_uptime()
+        uptime = datetime.now() - self.stats['start_time']
+        days = uptime.days
+        hours = uptime.seconds // 3600
+        minutes = (uptime.seconds % 3600) // 60
+        
+        uptime_str = f"{days}d {hours}h {minutes}m" if days > 0 else f"{hours}h {minutes}m"
         
         text = f"""
 📊 *SYSTEM STATISTICS*
 
 🤖 *Bot Information:*
 • Username: {BOT_USERNAME}
-• Version: 5.0
-• Uptime: {uptime}
+• Uptime: {uptime_str}
 • Status: 🟢 ONLINE
 
 👥 *User Statistics:*
-• Total Users: {len(self.users):,}
+• Total Users: Calculating...
 • Active Today: Calculating...
-• New Today: Calculating...
 
 💬 *Group Statistics:*
-• Total Groups: {len(self.groups):,}
-• Active Groups: {sum(1 for g in self.groups.values() if (datetime.now() - g['last_active']).seconds < 3600):,}
-• Messages Today: {self.stats['total_messages']:,}
+• Total Groups: {len(self.groups)}
+• Active Groups: {sum(1 for g in self.groups.values() if (datetime.now() - g['last_active']).seconds < 3600)}
+• Total Messages: {self.stats['total_messages']:,}
 
 🔐 *Security Statistics:*
-• Warnings Issued: {self.stats['total_warnings']:,}
-• Mutes Applied: {self.stats['total_mutes']:,}
-• Bans Issued: {self.stats['total_bans']:,}
-• Threats Blocked: {sum(len(w) for w in self.warnings.values()):,}
+• Total Warnings: {sum(len(w) for w in self.warnings.values())}
+• Active Mutes: {len([m for m in self.mutes.values() if m > datetime.now()])}
+• Threats Blocked: Calculating...
 
 ⚡ *Performance:*
 • Response Time: <1s
-• Memory Usage: Optimized
-• CPU Load: Minimal
-• Database: In-Memory
+• Security Level: MAXIMUM
+• System Health: ✅ OPTIMAL
         """
         
         await update.message.reply_text(
@@ -999,74 +721,41 @@ Select an option to begin:
             disable_web_page_preview=True
         )
     
-    async def setup_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Setup command for groups"""
-        chat = update.effective_chat
-        
-        if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            await update.message.reply_text("This command works only in groups!")
+    async def security_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Security settings command"""
+        if update.effective_user.id != OWNER_ID:
+            await update.message.reply_text("🚫 Owner only!")
             return
-        
-        # Check if user is admin
-        try:
-            member = await chat.get_member(update.effective_user.id)
-            if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                await update.message.reply_text("Admin only command!")
-                return
-        except:
-            await update.message.reply_text("Cannot verify admin status!")
-            return
-        
-        # Initialize group
-        if chat.id not in self.groups:
-            self.groups[chat.id] = {
-                'title': chat.title,
-                'members': await chat.get_member_count(),
-                'settings': {
-                    'welcome': True,
-                    'antispam': True,
-                    'antiflood': True,
-                    'antilink': False,
-                    'warn_limit': 3,
-                    'mute_duration': 3600,
-                    'language': 'en'
-                },
-                'stats': {'messages': 0, 'warnings': 0, 'mutes': 0},
-                'created': datetime.now(),
-                'last_active': datetime.now()
-            }
         
         text = f"""
-⚙️ *GROUP SETUP - {chat.title}*
+🔐 *SECURITY SETTINGS*
 
-*Current Settings:*
-✅ Welcome Messages: {'ON' if self.groups[chat.id]['settings']['welcome'] else 'OFF'}
-🔐 Anti-Spam: {'ON' if self.groups[chat.id]['settings']['antispam'] else 'OFF'}
-🌊 Anti-Flood: {'ON' if self.groups[chat.id]['settings']['antiflood'] else 'OFF'}
-🔗 Anti-Link: {'ON' if self.groups[chat.id]['settings']['antilink'] else 'OFF'}
-⚠️ Warn Limit: {self.groups[chat.id]['settings']['warn_limit']}
-⏱️ Mute Duration: {self.groups[chat.id]['settings']['mute_duration']//60} minutes
-🌐 Language: {self.groups[chat.id]['settings']['language'].upper()}
+*Current Configuration:*
+• Max Warnings: {self.security_settings['max_warnings']}
+• Mute Duration: {self.security_settings['mute_duration']} seconds
+• Ban Duration: {self.security_settings['ban_duration']} seconds
+• Flood Threshold: {self.security_settings['flood_threshold']} messages
+• Flood Timeframe: {self.security_settings['flood_timeframe']} seconds
 
-*Toggle settings with buttons:*
+*Toggle Settings:*
+• Anti-Link: {'✅ ON' if self.security_settings['anti_link'] else '❌ OFF'}
+• Anti-Spam: {'✅ ON' if self.security_settings['anti_spam'] else '❌ OFF'}
+• Anti-Flood: {'✅ ON' if self.security_settings['anti_flood'] else '❌ OFF'}
+• Anti-Caps: {'✅ ON' if self.security_settings['anti_caps'] else '❌ OFF'}
+• Anti-Repetition: {'✅ ON' if self.security_settings['anti_repetition'] else '❌ OFF'}
+
+*Usage:* `/security setting value`
+*Example:* `/security max_warnings 5`
         """
         
         keyboard = [
             [
-                InlineKeyboardButton(f"{'✅' if self.groups[chat.id]['settings']['welcome'] else '❌'} Welcome", 
-                    callback_data=f"toggle_welcome_{chat.id}"),
-                InlineKeyboardButton(f"{'✅' if self.groups[chat.id]['settings']['antispam'] else '❌'} Anti-Spam", 
-                    callback_data=f"toggle_antispam_{chat.id}")
+                InlineKeyboardButton("➕ Increase Security", callback_data="increase_security"),
+                InlineKeyboardButton("➖ Decrease Security", callback_data="decrease_security")
             ],
             [
-                InlineKeyboardButton(f"{'✅' if self.groups[chat.id]['settings']['antiflood'] else '❌'} Anti-Flood", 
-                    callback_data=f"toggle_antiflood_{chat.id}"),
-                InlineKeyboardButton(f"{'✅' if self.groups[chat.id]['settings']['antilink'] else '❌'} Anti-Link", 
-                    callback_data=f"toggle_antilink_{chat.id}")
-            ],
-            [
-                InlineKeyboardButton("⚙️ Advanced Settings", callback_data=f"adv_settings_{chat.id}"),
-                InlineKeyboardButton("📊 View Stats", callback_data=f"view_stats_{chat.id}")
+                InlineKeyboardButton("🔄 Reset to Default", callback_data="reset_security"),
+                InlineKeyboardButton("📊 View Logs", callback_data="security_logs")
             ]
         ]
         
@@ -1079,44 +768,35 @@ Select an option to begin:
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Help command"""
         text = """
-🤖 *ULTIMATE ENTERPRISE BOT - HELP*
+🤖 *SECURITY BOT - HELP*
 
 🔐 *Admin Commands:*
 • `/admin` - Owner admin panel
-• `/setup` - Configure group settings
-• `/stats` - View system statistics
-• `/broadcast` - Send message to all groups
-• `/broadcastgroups` - Send to groups only
-• `/backup` - Backup data
-• `/restart` - Restart bot
+• `/security` - Security settings
+• `/stats` - System statistics
+• `/broadcast` - Broadcast to all groups
+• `/logs` - View security logs
 
-⚙️ *Group Management:*
-• `/warn @user` - Warn a user
-• `/mute @user` - Mute user (admin)
-• `/ban @user` - Ban user (admin)
-• `/unmute @user` - Unmute user (admin)
-• `/unban @user` - Unban user (admin)
-• `/kick @user` - Kick user (admin)
+⚙️ *Group Commands:*
+• `/settings` - Configure group (Admin only)
+• `/warn @user` - Warn user (Admin)
+• `/mute @user` - Mute user (Admin)
+• `/ban @user` - Ban user (Admin)
 
 📊 *User Commands:*
 • `/report @user reason` - Report user
 • `/rules` - Show group rules
-• `/info` - Bot information
 • `/ping` - Check bot status
 
-🔧 *Settings:*
-• `/language en` - Change language
-• `/warnlimit 5` - Set warning limit
-• `/muteduration 60` - Set mute duration (minutes)
+🛡️ *Security Features:*
+• Multi-layer anti-spam protection
+• Real-time threat detection
+• Automated moderation
+• Flood prevention
+• Link filtering
+• Pattern recognition
 
-📢 *Broadcast Types:*
-• Text messages with formatting
-• Media (photos/videos)
-• Messages with buttons
-• Scheduled broadcasts
-• Targeted broadcasts
-
-💼 *Enterprise Support:* Contact @Admin
+💼 *Support:* Contact @Admin
         """
         
         await update.message.reply_text(
@@ -1124,27 +804,6 @@ Select an option to begin:
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=True
         )
-    
-    # ========== UTILITY METHODS ==========
-    
-    def get_uptime(self) -> str:
-        """Get bot uptime as string"""
-        delta = datetime.now() - self.stats['start_time']
-        
-        days = delta.days
-        hours = delta.seconds // 3600
-        minutes = (delta.seconds % 3600) // 60
-        
-        if days > 0:
-            return f"{days}d {hours}h {minutes}m"
-        elif hours > 0:
-            return f"{hours}h {minutes}m"
-        else:
-            return f"{minutes}m"
-    
-    def get_bot(self):
-        """Get bot instance"""
-        return self.application.bot if hasattr(self, 'application') else None
     
     # ========== BUTTON HANDLERS ==========
     
@@ -1155,111 +814,87 @@ Select an option to begin:
         
         data = query.data
         
-        if data == "enterprise_admin":
+        if data == "admin_panel":
             if query.from_user.id != OWNER_ID:
                 await query.edit_message_text("🚫 Owner only!")
                 return
             
             await self.admin_command(update, context)
             
-        elif data.startswith("broadcast_"):
-            await self.handle_broadcast_buttons(query, data)
+        elif data == "view_stats":
+            await self.stats_command(update, context)
             
-        elif data.startswith("admin_"):
-            await self.handle_admin_buttons(query, data)
+        elif data == "security_settings":
+            await self.security_command(update, context)
             
-        elif data.startswith("toggle_"):
-            await self.handle_toggle_buttons(query, data)
-    
-    async def handle_broadcast_buttons(self, query, data):
-        """Handle broadcast-related buttons"""
-        if data == "broadcast_text":
+        elif data == "broadcast":
+            if query.from_user.id != OWNER_ID:
+                await query.edit_message_text("🚫 Owner only!")
+                return
+            
             await query.edit_message_text(
-                "📝 *TEXT BROADCAST*\n\n"
-                "Send your message in this format:\n"
-                "`/broadcast Your message here`\n\n"
-                "*Formatting:*\n"
-                "• *Bold* text\n"
-                "• _Italic_ text\n"
-                "• `Code` text\n"
-                "• [Links](https://example.com)\n\n"
+                "📢 *BROADCAST SYSTEM*\n\n"
+                "Usage: `/broadcast message`\n\n"
                 "*Example:*\n"
-                "`/broadcast *Important Update*: New features added!`",
+                "`/broadcast *Important Update:* New features added!`\n\n"
+                "*Features:*\n"
+                "• Send to all groups\n"
+                "• Markdown formatting\n"
+                "• Rate limited\n"
+                "• Delivery reports",
                 parse_mode=ParseMode.MARKDOWN
             )
             
-        elif data == "broadcast_groups":
+        elif data == "increase_security":
+            if query.from_user.id != OWNER_ID:
+                await query.edit_message_text("🚫 Owner only!")
+                return
+            
+            # Increase security settings
+            self.security_settings['max_warnings'] = min(5, self.security_settings['max_warnings'] + 1)
+            self.security_settings['mute_duration'] = min(600, self.security_settings['mute_duration'] + 60)
+            self.security_settings['flood_threshold'] = max(3, self.security_settings['flood_threshold'] - 1)
+            
             await query.edit_message_text(
-                f"🎯 *GROUPS BROADCAST*\n\n"
-                f"*Available Groups:* {len(self.groups)}\n"
-                f"*Active Groups:* {sum(1 for g in self.groups.values() if (datetime.now() - g['last_active']).seconds < 86400)}\n\n"
-                f"*Usage:* `/broadcastgroups message`\n\n"
-                f"*Example:*\n"
-                f"`/broadcastgroups *Announcement*: Server maintenance tonight`",
+                f"🔐 *SECURITY INCREASED*\n\n"
+                f"*New Settings:*\n"
+                f"• Max Warnings: {self.security_settings['max_warnings']}\n"
+                f"• Mute Duration: {self.security_settings['mute_duration']}s\n"
+                f"• Flood Threshold: {self.security_settings['flood_threshold']}\n\n"
+                f"Security level increased!",
                 parse_mode=ParseMode.MARKDOWN
             )
-    
-    async def handle_admin_buttons(self, query, data):
-        """Handle admin panel buttons"""
-        if data == "admin_stats":
-            await self.stats_command(update=Update(
-                update_id=query.id,
-                message=query.message
-            ), context=ContextTypes.DEFAULT_TYPE)
             
-        elif data == "admin_broadcast":
-            await self.broadcast_command(update=Update(
-                update_id=query.id,
-                message=query.message
-            ), context=ContextTypes.DEFAULT_TYPE)
-    
-    async def handle_toggle_buttons(self, query, data):
-        """Handle toggle buttons"""
-        parts = data.split('_')
-        if len(parts) >= 3:
-            setting = parts[1]
-            chat_id = int(parts[2])
+        elif data == "refresh_admin":
+            await self.admin_command(update, context)
             
-            if chat_id in self.groups:
-                current = self.groups[chat_id]['settings'].get(setting, False)
-                self.groups[chat_id]['settings'][setting] = not current
-                
-                status = "✅ ON" if not current else "❌ OFF"
-                await query.edit_message_text(
-                    f"⚙️ *SETTING UPDATED*\n\n"
-                    f"*Setting:* {setting.replace('_', ' ').title()}\n"
-                    f"*Status:* {status}\n"
-                    f"*Group:* {self.groups[chat_id]['title']}\n\n"
-                    f"Changes applied successfully!",
-                    parse_mode=ParseMode.MARKDOWN
-                )
+        elif data == "close_admin":
+            await query.edit_message_text("Admin panel closed.")
     
-    # ========== MAIN SETUP ==========
+    # ========== APPLICATION SETUP ==========
     
     async def setup_application(self, application: Application):
         """Setup application with all handlers"""
         self.application = application
         
         # Command handlers
-        commands = [
+        command_handlers = [
             ("start", self.start_command),
             ("admin", self.admin_command),
             ("stats", self.stats_command),
-            ("setup", self.setup_command),
-            ("help", self.help_command),
             ("broadcast", self.broadcast_command),
-            ("broadcastgroups", self.broadcast_to_groups_command),
+            ("security", self.security_command),
+            ("help", self.help_command),
             ("ping", self.stats_command),
-            ("info", self.stats_command),
         ]
         
-        for cmd, handler in commands:
+        for cmd, handler in command_handlers:
             application.add_handler(CommandHandler(cmd, handler))
         
-        # Message handlers
+        # Message handler
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, 
-            self.advanced_anti_spam
+            self.message_handler
         ))
         
         # Button handler
@@ -1270,53 +905,53 @@ Select an option to begin:
             BotCommand("start", "Start bot"),
             BotCommand("admin", "Owner admin panel"),
             BotCommand("stats", "System statistics"),
-            BotCommand("setup", "Configure group"),
+            BotCommand("broadcast", "Broadcast to all groups"),
+            BotCommand("security", "Security settings"),
             BotCommand("help", "Show help"),
-            BotCommand("broadcast", "Broadcast to all"),
-            BotCommand("broadcastgroups", "Broadcast to groups"),
             BotCommand("ping", "Check bot status"),
-            BotCommand("info", "Bot information"),
         ]
         
         await application.bot.set_my_commands(bot_commands)
         
-        # Set bot description
-        await application.bot.set_my_description(
-            "🤖 Ultimate Enterprise Bot - Advanced group management, anti-spam, and broadcast system."
-        )
-        
-        # Set bot short description
-        await application.bot.set_my_short_description(
-            "Enterprise-grade group management bot"
-        )
-        
         logger.info("Application setup complete")
+        
+        # Send startup log
+        await self.log_to_channel(
+            "BOT_STARTUP",
+            {
+                'action': 'STARTUP',
+                'time': datetime.now().isoformat(),
+                'version': '2.0',
+                'owner': OWNER_ID
+            },
+            "INFO"
+        )
 
 def main():
-    """Start the ultimate bot"""
+    """Start the bot"""
     bot = UltimateEnterpriseBot()
     
     # Create application
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     
-    # Setup application
-    async def setup_app():
-        await bot.setup_application(app)
+    # Setup post initialization
+    async def post_init(application: Application):
+        await bot.setup_application(application)
     
-    app.post_init = setup_app
+    # Assign the coroutine function
+    app.post_init = post_init
     
-    print("=" * 70)
-    print("🚀 ULTIMATE ENTERPRISE BOT v5.0 STARTING...")
-    print("=" * 70)
+    print("=" * 60)
+    print("🔐 ULTIMATE SECURITY BOT STARTING...")
+    print("=" * 60)
     print(f"🤖 Bot: {BOT_USERNAME}")
     print(f"👑 Owner: {OWNER_ID}")
     print(f"📊 Log Channel: {LOG_CHANNEL}")
     print(f"🔐 Security Level: MAXIMUM")
-    print(f"📢 Broadcast System: ENABLED")
-    print(f"⚡ Anti-Spam AI: ACTIVE")
-    print("=" * 70)
-    print("💼 Enterprise features ready!")
-    print("=" * 70)
+    print(f"⚡ Anti-Spam Systems: ACTIVE")
+    print("=" * 60)
+    print("🚀 Bot is ready!")
+    print("=" * 60)
     
     # Start the bot
     app.run_polling()

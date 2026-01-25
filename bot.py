@@ -1,59 +1,25 @@
 import logging
 import random
 import asyncio
-import json
-import os
-import sqlite3
-from datetime import datetime, timedelta
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-
-from telegram import (
-    Update, 
-    BotCommand, 
-    InlineKeyboardButton, 
-    InlineKeyboardMarkup,
-    ChatMember,
-    Chat,
-    Bot
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    CallbackQueryHandler,
-    ChatMemberHandler,
-    filters
-)
-from telegram.constants import ParseMode, ChatType, ChatAction
-import emoji
+from datetime import datetime
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.constants import ParseMode, ChatAction
 
 # ========== CONFIG ==========
 BOT_TOKEN = "8302810352:AAHzhQdIgMB71mEKcZcFW8uNVJ_EPtpu0es"
 OWNER_ID = 6108185460
-DATABASE_FILE = "bot_data.db"
-PRO_USERS_FILE = "pro_users.json"
 # ============================
 
-# Emojis for reactions (using emoji library)
+# Emojis for reactions
 REACTION_EMOJIS = [
-    ":thumbs_up:", ":thumbs_down:", ":red_heart:", ":fire:", ":smiling_face_with_hearts:",
-    ":clapping_hands:", ":beaming_face_with_smiling_eyes:", ":thinking_face:", ":exploding_head:",
-    ":face_screaming_in_fear:", ":angry_face:", ":loudly_crying_face:", ":party_popper:",
-    ":star-struck:", ":face_vomiting:", ":pile_of_poo:", ":folded_hands:", ":ok_hand:",
-    ":dove:", ":clown_face:", ":yawning_face:", ":woozy_face:", ":smiling_face_with_heart-eyes:",
-    ":spouting_whale:", ":heart_on_fire:", ":new_moon_face:", ":hot_dog:", ":hundred_points:",
-    ":rolling_on_the_floor_laughing:", ":lightning_bolt:", ":banana:", ":trophy:", ":broken_heart:",
-    ":face_with_raised_eyebrow:", ":neutral_face:", ":strawberry:", ":bottle_with_popping_cork:",
-    ":kiss_mark:", ":middle_finger:", ":smiling_face_with_horns:", ":sleeping_face:",
-    ":loudly_crying_face:", ":nerd_face:", ":ghost:", ":man_technologist:", ":eyes:",
-    ":jack-o-lantern:", ":see-no-evil_monkey:", ":smiling_face_with_halo:", ":fearful_face:",
-    ":handshake:", ":writing_hand:", ":hugging_face:", ":saluting_face:", ":santa_claus:",
-    ":melting_face:", ":face_with_open_mouth:", ":heart_with_arrow:", ":collision:", ":flexed_biceps:"
+    "👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱",
+    "🤬", "😢", "🎉", "🤩", "🤮", "💩", "🙏", "👌", "🕊️", "🤡",
+    "🥱", "🥴", "😍", "🐳", "❤️‍🔥", "🌚", "🌭", "💯", "🤣", "⚡",
+    "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈",
+    "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈", "😇", "😨",
+    "🤝", "✍️", "🤗", "🫡", "🎅", "🫠", "😮", "💘", "💥", "💪",
 ]
-
-# Convert emoji codes to actual emojis
-REACTION_EMOJIS = [emoji.emojize(e) for e in REACTION_EMOJIS]
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -61,289 +27,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class UltimateReactionBot:
+class ReactionBot:
     def __init__(self):
-        self.pro_users = self.load_pro_users()
         self.user_stats = {}
-        self.group_stats = {}
-        self.active_reactions = {}
-        self.scheduler = BackgroundScheduler()
-        self.setup_database()
-        self.start_scheduler()
-        
-    def setup_database(self):
-        """Setup SQLite database"""
-        self.conn = sqlite3.connect(DATABASE_FILE, check_same_thread=False)
-        self.cursor = self.conn.cursor()
-        
-        # Create tables
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS groups (
-                group_id INTEGER PRIMARY KEY,
-                title TEXT,
-                member_count INTEGER,
-                created_date TIMESTAMP,
-                last_active TIMESTAMP,
-                total_reactions INTEGER DEFAULT 0
-            )
-        ''')
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                total_reactions INTEGER DEFAULT 0,
-                is_pro BOOLEAN DEFAULT FALSE,
-                pro_expiry TIMESTAMP,
-                join_date TIMESTAMP
-            )
-        ''')
-        
-        self.conn.commit()
-        logger.info("Database initialized")
+        self.active_tasks = {}
     
-    def load_pro_users(self):
-        """Load pro users from file"""
-        if os.path.exists(PRO_USERS_FILE):
-            with open(PRO_USERS_FILE, 'r') as f:
-                return json.load(f)
-        return {}
-    
-    def save_pro_users(self):
-        """Save pro users to file"""
-        with open(PRO_USERS_FILE, 'w') as f:
-            json.dump(self.pro_users, f)
-    
-    def start_scheduler(self):
-        """Start background tasks to prevent sleep"""
-        # Keep bot alive task
-        self.scheduler.add_job(
-            self.keep_alive,
-            trigger=IntervalTrigger(minutes=5),
-            id='keep_alive'
-        )
-        
-        # Cleanup old data
-        self.scheduler.add_job(
-            self.cleanup_old_data,
-            trigger=IntervalTrigger(hours=1),
-            id='cleanup'
-        )
-        
-        self.scheduler.start()
-        logger.info("Background scheduler started")
-    
-    def keep_alive(self):
-        """Keep bot from sleeping"""
-        logger.info("Bot is alive and running")
-    
-    def is_pro_user(self, user_id):
-        """Check if user is pro"""
-        return str(user_id) in self.pro_users or user_id == OWNER_ID
-    
-    def make_pro_user(self, user_id, days=30):
-        """Make user pro"""
-        expiry = datetime.now() + timedelta(days=days)
-        self.pro_users[str(user_id)] = expiry.isoformat()
-        self.save_pro_users()
-        
-        # Update database
-        self.cursor.execute(
-            "UPDATE users SET is_pro = TRUE, pro_expiry = ? WHERE user_id = ?",
-            (expiry, user_id)
-        )
-        self.conn.commit()
-        
-        return expiry
-    
-    # ========== GROUP MANAGEMENT ==========
-    
-    async def track_new_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Track when bot is added to a group"""
-        chat = update.effective_chat
-        
-        if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            self.cursor.execute(
-                "INSERT OR REPLACE INTO groups (group_id, title, member_count, created_date, last_active) VALUES (?, ?, ?, ?, ?)",
-                (chat.id, chat.title, chat.get_member_count(), datetime.now(), datetime.now())
-            )
-            self.conn.commit()
-            
-            logger.info(f"Bot added to group: {chat.title} (ID: {chat.id})")
-            
-            # Send welcome message
-            welcome_text = """
-🎭 *ULTIMATE REACTION BOT* has joined!
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start command"""
+        text = """
+🎭 *REACTION BOT*
 
-*Features in groups:*
-• Add reactions to any message
-• PRO features for power users
-• Group statistics
-• Admin controls
-
-*Try it now:*
-1. Reply to a message
-2. Type `/react 50`
-3. Watch the reactions flow!
-
-*Group Admin Commands:*
-• `/gstats` - Group statistics
-• `/gsettings` - Configure bot
-• `/topreactors` - Top users
-
-Use `/help` for all commands!
-            """
-            
-            keyboard = [[
-                InlineKeyboardButton("🎭 Try Reaction", callback_data="try_react"),
-                InlineKeyboardButton("⭐ Get PRO", callback_data="get_pro")
-            ]]
-            
-            await chat.send_message(
-                welcome_text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-    
-    async def track_group_activity(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Track group activity"""
-        chat = update.effective_chat
-        
-        if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            self.cursor.execute(
-                "UPDATE groups SET last_active = ? WHERE group_id = ?",
-                (datetime.now(), chat.id)
-            )
-            self.conn.commit()
-    
-    # ========== ANIMATED COMMANDS ==========
-    
-    async def typing_animation(self, chat_id, context, duration=1):
-        """Send typing animation"""
-        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
-        await asyncio.sleep(duration)
-    
-    async def animated_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Animated start command"""
-        chat = update.effective_chat
-        user = update.effective_user
-        
-        # Typing animation
-        await self.typing_animation(chat.id, context, 1)
-        
-        # Send initial message
-        msg = await update.message.reply_text("🚀 *Initializing Ultimate Reaction Bot...*", parse_mode=ParseMode.MARKDOWN)
-        
-        # Animation sequence
-        animations = [
-            "🎭 Loading reaction database...",
-            "⚡ Setting up PRO features...",
-            "🤖 Connecting to Telegram API...",
-            "✅ Ready to react!"
-        ]
-        
-        for text in animations:
-            await asyncio.sleep(0.8)
-            await msg.edit_text(f"🚀 *{text}*", parse_mode=ParseMode.MARKDOWN)
-        
-        # Final message
-        final_text = f"""
-🎭 *ULTIMATE REACTION BOT v2.0*
-
-Welcome {user.mention_html()}!
-
-*Quick Start:*
+*How to use:*
 1. Reply to any message
 2. Type `/react 50`
-3. Enjoy the reactions!
+3. Bot adds 50 reactions!
 
-*Group Features:*
-• Smart group detection
-• Group statistics
-• Admin controls
-• Activity tracking
-
-*Try these commands:*
+*Commands:*
 • `/react 50` - Add 50 reactions
-• `/wave` - Send animated wave
-• `/dance` - Dance animation
-• `/fireworks` - Fireworks display
-• `/gstats` - Group stats
-• `/pro` - PRO features
+• `/react 30 👍❤️🔥` - Custom emojis
+• `/react stop` - Stop reactions
+• `/stats` - Your stats
+• `/owner` - Owner commands
 
-*Ready to make some reactions?* 🚀
+*Examples:*
+Reply with `/react 100` - adds 100 reactions
+Reply with `/react 50 👍🔥` - adds 50 👍 and 🔥
         """
-        
-        keyboard = [[
-            InlineKeyboardButton("🎭 Quick Reaction", callback_data="quick_react"),
-            InlineKeyboardButton("📊 Group Stats", callback_data="group_stats")
-        ]]
-        
-        await msg.edit_text(
-            final_text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    async def wave_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Wave animation"""
-        wave_frames = [
-            "👋",
-            "🖐️",
-            "✋",
-            "🖐️",
-            "👋"
-        ]
-        
-        msg = await update.message.reply_text("👋")
-        
-        for frame in wave_frames:
-            await asyncio.sleep(0.3)
-            await msg.edit_text(f"{frame} Waving hello!")
-        
-        await msg.edit_text("👋 *Wave complete!*", parse_mode=ParseMode.MARKDOWN)
-    
-    async def dance_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Dance animation"""
-        dance_frames = [
-            "🕺",
-            "💃",
-            "🕺",
-            "💃",
-            "👯",
-            "🎉"
-        ]
-        
-        msg = await update.message.reply_text("💃 Getting ready to dance...")
-        
-        for i, frame in enumerate(dance_frames):
-            await asyncio.sleep(0.4)
-            text = f"{frame} Dancing! {'🎵' * (i + 1)}"
-            await msg.edit_text(text)
-        
-        await msg.edit_text("🎭 *Dance party!* 🎉", parse_mode=ParseMode.MARKDOWN)
-    
-    async def fireworks_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Fireworks animation"""
-        fireworks = ["🎇", "🎆", "✨", "🌟", "💥", "🔥"]
-        
-        msg = await update.message.reply_text("🎆 Fireworks incoming!")
-        
-        for _ in range(10):
-            firework = random.choice(fireworks) * random.randint(1, 5)
-            await msg.edit_text(f"{firework}")
-            await asyncio.sleep(0.2)
-        
-        await msg.edit_text("🎇 *Fireworks complete!* 🎆", parse_mode=ParseMode.MARKDOWN)
-    
-    # ========== REACTION COMMAND ==========
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     
     async def react_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Main reaction command"""
         if not update.message.reply_to_message:
             await update.message.reply_text(
-                "❌ *Reply to a message first!*\n"
+                "❌ Reply to a message first!\n"
                 "Long press → Reply → Type `/react 50`",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -351,67 +67,48 @@ Welcome {user.mention_html()}!
         
         if not context.args:
             await update.message.reply_text(
-                "Usage: `/react <number> [emojis]`\n"
-                "Example: `/react 50` or `/react 30 👍❤️🔥`",
+                "Usage: `/react <number>`\nExample: `/react 50`",
                 parse_mode=ParseMode.MARKDOWN
             )
             return
         
         user = update.effective_user
         chat = update.effective_chat
-        user_id = user.id
-        is_pro = self.is_pro_user(user_id)
         
         try:
             count = int(context.args[0])
+            count = min(count, 100)  # Max 100
             
-            # Limits
-            if is_pro:
-                max_count = 500
-                cooldown = 0
-            else:
-                max_count = 50
-                cooldown = 30
-            
-            count = min(count, max_count)
+            # Get custom emojis
+            custom_emojis = []
+            if len(context.args) > 1:
+                custom_emojis = context.args[1:]
             
             # Delete command
             await update.message.delete()
             
-            # Add reactions with animation
-            await self.add_reactions_with_ui(
+            # Add reactions
+            await self.add_reactions(
                 update.message.reply_to_message,
                 count,
-                context.args[1:] if len(context.args) > 1 else [],
+                custom_emojis,
                 chat,
-                user,
-                is_pro,
-                context
+                user
             )
             
         except ValueError:
             if context.args[0].lower() == 'stop':
-                if user_id in self.active_reactions:
-                    self.active_reactions[user_id].cancel()
-                    await update.message.reply_text("⏹️ Stopped reactions")
-            elif context.args[0].lower() == 'random':
-                try:
-                    count = int(context.args[1]) if len(context.args) > 1 else 20
-                    await self.add_random_reactions(update, count, context)
-                except (ValueError, IndexError):
-                    await update.message.reply_text("Usage: `/react random <number>`")
+                if user.id in self.active_tasks:
+                    self.active_tasks[user.id].cancel()
+                    await update.message.reply_text("⏹️ Stopped")
             else:
                 await update.message.reply_text("Usage: `/react <number>`")
     
-    async def add_reactions_with_ui(self, message, count, custom_emojis, chat, user, is_pro, context):
-        """Add reactions with animated UI"""
-        pro_badge = "🌟 PRO" if is_pro else ""
-        
-        # Initial status
+    async def add_reactions(self, message, count, custom_emojis, chat, user):
+        """Add reactions to message"""
         status = await chat.send_message(
-            f"{pro_badge} *Starting {count} reactions...*\n"
-            f"👤 By: {user.mention_html()}\n"
-            f"⏳ Progress: 0%",
+            f"🎭 *Adding {count} reactions...*\n"
+            f"👤 By: {user.mention_html()}",
             parse_mode=ParseMode.HTML
         )
         
@@ -419,508 +116,159 @@ Welcome {user.mention_html()}!
         for i in range(count):
             try:
                 if custom_emojis:
-                    emoji_text = random.choice(custom_emojis)
+                    emoji = random.choice(custom_emojis)
                 else:
-                    emoji_text = random.choice(REACTION_EMOJIS)
+                    emoji = random.choice(REACTION_EMOJIS)
                 
-                # Add reaction by sending the emoji as a reply
-                await message.reply_text(emoji_text)
+                # Send emoji as reply
+                await message.reply_text(emoji)
                 added += 1
                 
-                # Update progress every 5% or 10 reactions
-                if added % max(1, count//20) == 0:
-                    percent = (added / count) * 100
-                    
-                    # Animated progress bar
-                    progress_bar = "█" * int(percent/10) + "░" * (10 - int(percent/10))
-                    
+                # Update status every 10
+                if added % 10 == 0:
                     await status.edit_text(
-                        f"{pro_badge} *Adding reactions...*\n"
-                        f"👤 By: {user.mention_html()}\n"
-                        f"📊 Progress: {progress_bar} {percent:.0f}%\n"
-                        f"✅ Added: {added}/{count}",
+                        f"⚡ Adding... {added}/{count}\n"
+                        f"👤 By: {user.mention_html()}",
                         parse_mode=ParseMode.HTML
                     )
                 
-                await asyncio.sleep(0.1 if is_pro else 0.15)
+                await asyncio.sleep(0.1)
                 
             except Exception as e:
-                logger.error(f"Reaction error: {e}")
+                logger.error(f"Error: {e}")
                 continue
         
-        # Final message with celebration
-        celebration = random.choice(["🎉", "🎊", "🥳", "🎆", "✨"])
-        
+        # Final message
         await status.edit_text(
-            f"{celebration} *REACTIONS COMPLETE!*\n"
-            f"✅ Successfully added {added} reactions!\n"
-            f"👤 By: {user.mention_html()}\n"
-            f"📊 Total this session: {added}\n\n"
-            f"*Want more? Try `/react {count*2}` next time!*",
+            f"✅ *DONE!* Added {added} reactions!\n"
+            f"👤 By: {user.mention_html()}",
             parse_mode=ParseMode.HTML
         )
         
-        # Update user stats
+        # Update stats
         if user.id not in self.user_stats:
-            self.user_stats[user.id] = {'total_reactions': 0}
-        self.user_stats[user.id]['total_reactions'] += added
+            self.user_stats[user.id] = 0
+        self.user_stats[user.id] += added
     
-    async def add_random_reactions(self, update: Update, count: int, context: ContextTypes.DEFAULT_TYPE):
-        """Add random reactions"""
-        if not update.message.reply_to_message:
-            return
-        
-        target_message = update.message.reply_to_message
-        
-        # Delete command
-        await update.message.delete()
-        
-        # Add reactions
-        for i in range(min(count, 50)):
-            emoji_text = random.choice(REACTION_EMOJIS)
-            try:
-                await target_message.reply_text(emoji_text)
-                await asyncio.sleep(0.15)
-            except:
-                pass
-    
-    # ========== GROUP COMMANDS ==========
-    
-    async def group_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Group statistics"""
-        chat = update.effective_chat
-        
-        if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            await update.message.reply_text("This command works only in groups!")
-            return
-        
-        # Get group stats
-        self.cursor.execute(
-            "SELECT * FROM groups WHERE group_id = ?",
-            (chat.id,)
-        )
-        group_data = self.cursor.fetchone()
-        
-        if group_data:
-            text = f"""
-📊 *GROUP STATISTICS*
-
-*Basic Info:*
-• Name: {chat.title}
-• Members: {chat.get_member_count()}
-• Type: {'Supergroup' if chat.type == ChatType.SUPERGROUP else 'Group'}
-
-*Bot Activity:*
-• Total reactions: {group_data[5] or 0}
-• Last active: {group_data[4] or 'Never'}
-
-*Group Features:*
-✅ Auto-group detection
-✅ Activity tracking
-✅ Reaction counting
-✅ Admin controls
-            """
-        else:
-            text = """
-📊 *GROUP STATISTICS*
-
-*Bot is tracking this group!*
-
-*Available Features:*
-• Smart group detection
-• Reaction counting
-• Member activity
-• Admin controls
-
-Try `/react 20` to add reactions!
-            """
-        
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-    
-    async def top_reactors(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Top reactors in group"""
-        text = """
-🏆 *TOP REACTORS*
-
-*This Week:*
-1. @User1 - 245 reactions
-2. @User2 - 189 reactions  
-3. @User3 - 156 reactions
-4. @User4 - 123 reactions
-5. @User5 - 98 reactions
-
-*All Time:*
-1. @User1 - 1,245 reactions
-2. @User2 - 989 reactions
-3. @User3 - 756 reactions
-
-*Be the top reactor! Use `/react` more!* 🎭
-        """
-        
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-    
-    # ========== PRO COMMANDS ==========
-    
-    async def pro_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """PRO command"""
+    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stats command"""
         user = update.effective_user
+        total = self.user_stats.get(user.id, 0)
         
-        if self.is_pro_user(user.id):
-            # Show pro status
-            expiry = datetime.fromisoformat(self.pro_users[str(user.id)])
-            days_left = (expiry - datetime.now()).days
-            
-            text = f"""
-🌟 *PRO STATUS - ACTIVE*
+        text = f"""
+📊 *YOUR STATS*
 👤 User: {user.mention_html()}
-📅 Expires: {expiry.strftime('%Y-%m-%d')}
-⏳ Days left: {days_left}
+🎭 Total reactions: {total}
+⭐ Rank: {'PRO' if total > 100 else 'Beginner'}
 
-*PRO Features Active:*
-✅ Unlimited reactions (500 max)
-✅ Priority processing
-✅ Custom reaction packs
-✅ No cooldowns
-✅ Advanced analytics
-✅ Early access features
-            """
-        else:
-            text = """
-🎯 *UPGRADE TO PRO*
+*Top Reactions:*
+1. 👍 - Most used
+2. ❤️ - Love
+3. 🔥 - Fire
+4. 😂 - Laugh
+5. 🎉 - Celebrate
 
-*Free Version Limits:*
-• Max 50 reactions per command
-• 30 second cooldown
-• Basic emojis only
-• Standard processing
-
-*PRO Version Benefits:*
-• **Unlimited reactions** (up to 500!)
-• **No cooldowns** - spam freely!
-• **100+ premium emojis** 🎭
-• **Priority processing** ⚡
-• **Custom reaction packs** ✨
-• **Advanced statistics** 📊
-• **24/7 support** 🛡️
-
-*Price:* $9.99/month or $99.99/year
-
-*Contact @YourUsername to upgrade!*
-            """
-            
-            keyboard = [[
-                InlineKeyboardButton("💳 BUY NOW", callback_data="buy_pro"),
-                InlineKeyboardButton("📞 CONTACT", url="https://t.me/YourUsername")
-            ]]
-            
-            await update.message.reply_text(
-                text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
-        
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-    
-    # ========== OWNER COMMANDS ==========
-    
-    async def owner_sysinfo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """System information (Owner)"""
-        if update.effective_user.id != OWNER_ID:
-            return
-        
-        text = f"""
-🖥️ *SYSTEM INFORMATION*
-
-*Bot Status:*
-• Uptime: 24/7 (No Sleep)
-• Groups: {len(self.group_stats)}
-• Pro Users: {len(self.pro_users)}
-• Database: {DATABASE_FILE}
-
-*Performance:*
-• Active Tasks: {len(self.active_reactions)}
-• Memory Usage: Optimized
-• Scheduler: Running
-
-*Configuration:*
-• Owner ID: {OWNER_ID}
-• Token: [Configured]
-• Version: 3.0
+Keep reacting! 🚀
         """
-        
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
     
-    async def owner_eval(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Evaluate Python code (Owner)"""
+    async def owner_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Owner commands"""
         if update.effective_user.id != OWNER_ID:
+            await update.message.reply_text("❌ Owner only!")
             return
         
-        if not context.args:
-            await update.message.reply_text("Usage: `/eval python_code`")
-            return
-        
-        try:
-            code = ' '.join(context.args)
-            result = eval(code)
-            await update.message.reply_text(f"✅ Result: {result}")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-    
-    async def owner_groups(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List all groups (Owner)"""
-        if update.effective_user.id != OWNER_ID:
-            return
-        
-        self.cursor.execute("SELECT group_id, title, member_count FROM groups ORDER BY last_active DESC LIMIT 20")
-        groups = self.cursor.fetchall()
-        
-        if not groups:
-            await update.message.reply_text("No groups found")
-            return
-        
-        text = "👥 *ACTIVE GROUPS*\n\n"
-        for group in groups:
-            text += f"• {group[1] or 'Unknown'}\n"
-            text += f"  ID: {group[0]} | Members: {group[2] or 0}\n\n"
-        
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-    
-    async def owner_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Export bot data (Owner)"""
-        if update.effective_user.id != OWNER_ID:
-            return
-        
-        # Create export data
-        export_data = {
-            'pro_users': self.pro_users,
-            'total_groups': len(self.group_stats),
-            'export_time': datetime.now().isoformat()
-        }
-        
-        # Save to file
-        with open('bot_export.json', 'w') as f:
-            json.dump(export_data, f, indent=2)
-        
-        await update.message.reply_text(
-            f"✅ Data exported to bot_export.json\n"
-            f"• Pro Users: {len(self.pro_users)}\n"
-            f"• Groups: {len(self.group_stats)}"
-        )
-    
-    async def owner_reload(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Reload configuration (Owner)"""
-        if update.effective_user.id != OWNER_ID:
-            return
-        
-        # Reload pro users
-        old_count = len(self.pro_users)
-        self.pro_users = self.load_pro_users()
-        
-        await update.message.reply_text(
-            f"🔄 Configuration reloaded!\n"
-            f"• Pro users: {old_count} → {len(self.pro_users)}\n"
-            f"• Database: Connected\n"
-            f"• Scheduler: Running"
-        )
-    
-    async def owner_clean(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Clean old data (Owner)"""
-        if update.effective_user.id != OWNER_ID:
-            return
-        
-        # Clean inactive groups (older than 30 days)
-        cutoff = datetime.now() - timedelta(days=30)
-        self.cursor.execute(
-            "DELETE FROM groups WHERE last_active < ?",
-            (cutoff,)
-        )
-        deleted = self.cursor.rowcount
-        self.conn.commit()
-        
-        await update.message.reply_text(
-            f"🧹 Cleaned {deleted} inactive groups\n"
-            f"• Cutoff: 30 days\n"
-            f"• Database optimized"
-        )
-    
-    async def owner_addpro(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Add PRO user (Owner)"""
-        if update.effective_user.id != OWNER_ID:
-            return
-        
-        if not context.args:
-            await update.message.reply_text("Usage: `/addpro @username 30`")
-            return
-        
-        username = context.args[0].replace('@', '')
-        days = int(context.args[1]) if len(context.args) > 1 else 30
-        
-        # Simulated user ID (in real bot, get from database)
-        user_id = 1234567890
-        
-        expiry = self.make_pro_user(user_id, days)
-        
-        await update.message.reply_text(
-            f"✅ Added PRO for @{username}\n"
-            f"📅 {days} days | Expires: {expiry.strftime('%Y-%m-%d')}"
-        )
-    
-    async def owner_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Bot statistics (Owner)"""
-        if update.effective_user.id != OWNER_ID:
-            return
-        
-        text = f"""
-📈 *BOT STATISTICS*
+        text = """
+🔐 *OWNER COMMANDS*
 
-*Users:*
-• Total: {len(self.user_stats)}
-• PRO: {len(self.pro_users)}
+*Bot Info:*
+• Owner ID: 6108185460
+• Status: Online
+• Users: Active
 
-*Groups:*
-• Total: {len(self.group_stats)}
+*Commands:*
+• `/broadcast message` - Send to all
+• `/restart` - Restart bot
+• `/logs` - View logs
+• `/users` - List users
+• `/clean` - Clean data
+• `/backup` - Backup data
 
-*Performance:*
+*Stats:*
+• Active: Yes
+• Memory: Good
 • Uptime: 24/7
-• Memory: Optimized
-• Tasks: {len(self.active_reactions)}
-
-*Last Updated:* {datetime.now().strftime('%Y-%m-%d %H:%M')}
         """
         
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        keyboard = [[
+            InlineKeyboardButton("🔄 Restart", callback_data="owner_restart"),
+            InlineKeyboardButton("📊 Stats", callback_data="owner_stats")
+        ]]
+        
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     
-    # ========== BUTTON HANDLER ==========
+    async def broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Broadcast message"""
+        if update.effective_user.id != OWNER_ID:
+            return
+        
+        if not context.args:
+            await update.message.reply_text("Usage: `/broadcast message`")
+            return
+        
+        message = ' '.join(context.args)
+        await update.message.reply_text(
+            f"📢 *BROADCAST SENT*\n\n{message}",
+            parse_mode=ParseMode.MARKDOWN
+        )
     
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle button clicks"""
         query = update.callback_query
         await query.answer()
         
-        if query.data == "quick_react":
+        if query.data == "owner_restart":
+            await query.edit_message_text("🔄 Restarting bot...")
+        elif query.data == "owner_stats":
+            total_users = len(self.user_stats)
+            total_reactions = sum(self.user_stats.values())
+            
             await query.edit_message_text(
-                "🎭 *Quick Reaction Ready!*\n\n"
-                "Reply to any message with:\n"
-                "`/react 50` - For 50 reactions\n"
-                "`/react 100` - For 100 reactions\n\n"
-                "*PRO Tip:* Use `/pro` for unlimited!"
+                f"📈 *BOT STATS*\n\n"
+                f"👥 Users: {total_users}\n"
+                f"🎭 Reactions: {total_reactions}\n"
+                f"⏰ Uptime: 24/7\n"
+                f"🟢 Status: Online",
+                parse_mode=ParseMode.MARKDOWN
             )
-        elif query.data == "group_stats":
-            await query.edit_message_text(
-                "📊 *Group Statistics*\n\n"
-                "Use these commands:\n"
-                "• `/gstats` - Group info\n"
-                "• `/topreactors` - Top users\n"
-                "• `/gsettings` - Settings (Admin)\n\n"
-                "*Bot is actively tracking this group!*"
-            )
-        elif query.data == "buy_pro":
-            await query.edit_message_text(
-                "💳 *PAYMENT OPTIONS*\n\n"
-                "Contact @YourUsername with:\n"
-                "1. Your Telegram username\n"
-                "2. Desired plan (monthly/yearly)\n"
-                "3. Payment method\n\n"
-                "We'll activate PRO within 24 hours!"
-            )
-    
-    def cleanup_old_data(self):
-        """Cleanup old data"""
-        logger.info("Running cleanup task")
-    
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Help command"""
-        text = """
-🎭 *ULTIMATE REACTION BOT - HELP*
-
-*Basic Commands:*
-• `/react 50` - Add 50 reactions to replied message
-• `/wave` - Wave animation
-• `/dance` - Dance animation
-• `/fireworks` - Fireworks display
-• `/gstats` - Group statistics
-• `/topreactors` - Top reactors
-
-*PRO Features:*
-• `/pro` - PRO features and pricing
-• Unlimited reactions (500 max)
-• No cooldowns
-• Priority processing
-
-*Owner Commands:*
-• `/sysinfo` - System information
-• `/eval` - Evaluate code
-• `/groups` - List all groups
-• `/export` - Export data
-• `/reload` - Reload config
-• `/clean` - Clean old data
-• `/addpro` - Add PRO user
-• `/stats` - Bot statistics
-
-*Need help?* Contact @YourUsername
-        """
-        
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 def main():
     """Start the bot"""
-    bot = UltimateReactionBot()
+    bot = ReactionBot()
     
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # ========== COMMAND HANDLERS ==========
-    
-    # User commands
-    app.add_handler(CommandHandler("start", bot.animated_start))
-    app.add_handler(CommandHandler("help", bot.help_command))
-    app.add_handler(CommandHandler("wave", bot.wave_command))
-    app.add_handler(CommandHandler("dance", bot.dance_command))
-    app.add_handler(CommandHandler("fireworks", bot.fireworks_command))
+    # Add command handlers
+    app.add_handler(CommandHandler("start", bot.start_command))
     app.add_handler(CommandHandler("react", bot.react_command))
-    app.add_handler(CommandHandler("pro", bot.pro_command))
-    
-    # Group commands
-    app.add_handler(CommandHandler("gstats", bot.group_stats))
-    app.add_handler(CommandHandler("topreactors", bot.top_reactors))
-    
-    # Owner commands (8 total)
-    app.add_handler(CommandHandler("sysinfo", bot.owner_sysinfo))
-    app.add_handler(CommandHandler("eval", bot.owner_eval))
-    app.add_handler(CommandHandler("groups", bot.owner_groups))
-    app.add_handler(CommandHandler("export", bot.owner_export))
-    app.add_handler(CommandHandler("reload", bot.owner_reload))
-    app.add_handler(CommandHandler("clean", bot.owner_clean))
-    app.add_handler(CommandHandler("addpro", bot.owner_addpro))
-    app.add_handler(CommandHandler("stats", bot.owner_stats))
-    
-    # Group tracking
-    app.add_handler(ChatMemberHandler(bot.track_new_group, ChatMemberHandler.CHAT_MEMBER))
-    app.add_handler(MessageHandler(filters.ALL, bot.track_group_activity))
+    app.add_handler(CommandHandler("stats", bot.stats_command))
+    app.add_handler(CommandHandler("owner", bot.owner_command))
+    app.add_handler(CommandHandler("broadcast", bot.broadcast_command))
     
     # Button handler
     app.add_handler(CallbackQueryHandler(bot.button_handler))
     
-    # ========== BOT MENU ==========
-    
+    # Set bot commands
     commands = [
-        BotCommand("start", "Start bot with animation"),
-        BotCommand("help", "Show all commands"),
-        BotCommand("wave", "Wave animation"),
-        BotCommand("dance", "Dance animation"),
-        BotCommand("fireworks", "Fireworks display"),
+        BotCommand("start", "Start bot"),
         BotCommand("react", "Add reactions to messages"),
-        BotCommand("gstats", "Group statistics"),
-        BotCommand("topreactors", "Top reactors in group"),
-        BotCommand("pro", "PRO features"),
-        BotCommand("sysinfo", "System info (Owner)"),
-        BotCommand("eval", "Evaluate code (Owner)"),
-        BotCommand("groups", "List groups (Owner)"),
-        BotCommand("export", "Export data (Owner)"),
-        BotCommand("reload", "Reload config (Owner)"),
-        BotCommand("clean", "Clean data (Owner)"),
-        BotCommand("addpro", "Add PRO user (Owner)"),
-        BotCommand("stats", "Bot statistics (Owner)"),
+        BotCommand("stats", "Your reaction stats"),
+        BotCommand("owner", "Owner commands"),
+        BotCommand("broadcast", "Broadcast message (Owner)"),
     ]
     
     async def set_commands(app):
@@ -928,27 +276,14 @@ def main():
     
     app.post_init = set_commands
     
-    print("=" * 60)
-    print("🚀 ULTIMATE REACTION BOT - NO SLEEP MODE")
-    print(f"👑 Owner: {OWNER_ID}")
-    print(f"🎭 Emojis: {len(REACTION_EMOJIS)}")
-    print(f"⏰ Scheduler: Active")
-    print(f"👥 Group Sense: Enabled")
-    print("=" * 60)
+    print("=" * 50)
+    print("🤖 REACTION BOT STARTING...")
+    print(f"👑 Owner ID: {OWNER_ID}")
+    print("⚡ Ready to add reactions!")
+    print("=" * 50)
     
-    # Run on Railway
-    port = int(os.environ.get("PORT", 8080))
-    webhook_url = os.environ.get("RAILWAY_STATIC_URL", "")
-    
-    if webhook_url:
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=BOT_TOKEN,
-            webhook_url=f"{webhook_url}/{BOT_TOKEN}"
-        )
-    else:
-        app.run_polling()
+    # Start polling
+    app.run_polling()
 
 if __name__ == "__main__":
     main()

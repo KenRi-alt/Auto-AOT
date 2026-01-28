@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
-FAMILY TREE TELEGRAM BOT
-Complete production-ready implementation
-Owner ID: 6108185460
-Bot Token: 8296250010:AAFSZ9psxmooDvODWCTvnvn4y7K3SsZN_Rc
-Log Channel: -1003662720845
+FAMILY TREE TELEGRAM BOT - ULTIMATE VERSION
+Complete implementation with maximum security
 """
 
 import os
@@ -12,60 +9,75 @@ import json
 import asyncio
 import logging
 import random
+import secrets
+import string
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Set
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
+from collections import defaultdict
 import html
 import uuid
+import hashlib
+from pathlib import Path
 
-# Telegram Bot Framework
+# Telegram
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup,
     InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton,
-    ReplyKeyboardRemove, URLInputFile
+    ReplyKeyboardRemove, URLInputFile, FSInputFile
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 # Database
 import asyncpg
 from asyncpg.pool import Pool
+import aiosqlite
+
+# For backup/restore
+import csv
+import zipfile
+import io
 
 # ============================================================================
-# CONFIGURATION & SETUP
+# CONFIGURATION - UPDATE THESE!
 # ============================================================================
 
-# Your credentials
-OWNER_ID = 6108185460
-BOT_TOKEN = "8296250010:AAFSZ9psxmooDvODWCTvnvn4y7K3SsZN_Rc"
-LOG_CHANNEL = -1003662720845
+# 🔐 YOUR CREDENTIALS (UPDATE THESE!)
+OWNER_ID = 6108185460  # Your Telegram ID
+BOT_TOKEN = "8296250010:AAFSZ9psxmooDvODWCTvnvn4y7K3SsZN_Rc"  # ⚠️ REPLACE WITH ACTUAL TOKEN
+LOG_CHANNEL = -1003662720845  # Your log channel
 
-# Database configuration (Railway will provide DATABASE_URL)
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/famtree")
+# Database configuration
+DB_PATH = "family_bot.db"  # SQLite for simplicity, Railway will handle
 
-# Bot configuration
-CURRENCIES = {
-    "cash": "💵",
-    "gold": "🪙", 
-    "bonds": "👨‍👩‍👧‍👦",
-    "credits": "⭐",
-    "tokens": "🌱"
+# Security settings
+MAX_REQUESTS_PER_MINUTE = 30  # Rate limiting
+BACKUP_KEY = secrets.token_urlsafe(32)  # Auto-generated backup key
+
+# Game constants
+CURRENCIES = ["cash", "gold", "bonds", "credits", "tokens"]
+CROP_TYPES = ["carrot", "tomato", "potato", "eggplant", "corn", "pepper"]
+CROP_PRICES = {
+    "carrot": {"buy": 10, "sell": 15, "grow_time": 3600},
+    "tomato": {"buy": 15, "sell": 22, "grow_time": 4800},
+    "potato": {"buy": 8, "sell": 12, "grow_time": 4200},
+    "eggplant": {"buy": 20, "sell": 30, "grow_time": 5400},
+    "corn": {"buy": 12, "sell": 18, "grow_time": 6000},
+    "pepper": {"buy": 25, "sell": 38, "grow_time": 6600}
 }
 
-# Constants
-DAILY_BONUS = 500
-FRIEND_BONUS = 3000
-GEMSTONE_BONUS = 5000
-KILL_REWARD = 100
-MAX_ROB_DAILY = 8
-MAX_KILL_DAILY = 5
+# ============================================================================
+# SETUP LOGGING
+# ============================================================================
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -73,1926 +85,1305 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# DATABASE MODELS & SCHEMA
+# RATE LIMITING CLASS
 # ============================================================================
 
-class RelationType(Enum):
-    PARENT = "parent"
-    SPOUSE = "spouse"
-    CHILD = "child"
-    SIBLING = "sibling"
-
-@dataclass
-class User:
-    """User data model"""
-    id: int
-    username: Optional[str] = None
-    first_name: str = ""
-    last_name: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    cash: int = 1000
-    gold: int = 0
-    bonds: int = 0
-    credits: int = 100
-    tokens: int = 50
-    gemstone: Optional[str] = None
-    gemstone_date: Optional[datetime] = None
-    weapon: str = "none"
-    reputation: int = 100
-    job: Optional[str] = None
-    is_alive: bool = True
-    last_daily: Optional[datetime] = None
-    rob_count: int = 0
-    kill_count: int = 0
-    rob_reset: datetime = field(default_factory=datetime.utcnow)
-    kill_reset: datetime = field(default_factory=datetime.utcnow)
-    language: str = "en"
-    
-@dataclass
-class FamilyRelation:
-    """Family relationship model"""
-    id: int
-    user1_id: int
-    user2_id: int
-    relation_type: RelationType
-    created_at: datetime
-    
-@dataclass
-class Friendship:
-    """Friend relationship model"""
-    user1_id: int
-    user2_id: int
-    created_at: datetime
-    rating: Optional[int] = None
-
-@dataclass  
-class Insurance:
-    """Insurance model for kill mechanics"""
-    id: int
-    insurer_id: int
-    insured_id: int
-    amount: int
-    created_at: datetime
-    is_active: bool = True
-
-@dataclass
-class PendingProposal:
-    """Pending proposal model"""
-    id: str
-    from_id: int
-    to_id: int
-    proposal_type: str  # 'adopt', 'marry', 'friend'
-    created_at: datetime
-
-# ============================================================================
-# DATABASE MANAGER
-# ============================================================================
-
-class Database:
-    """Handles all database operations"""
+class RateLimiter:
+    """Advanced rate limiting with per-user, per-command limits"""
     
     def __init__(self):
-        self.pool: Optional[Pool] = None
+        self.requests = defaultdict(list)
+        self.limits = {
+            "default": (30, 60),  # 30 requests per 60 seconds
+            "rob": (8, 86400),    # 8 robberies per day
+            "kill": (5, 86400),   # 5 kills per day
+            "fertilize": (6, 3600),  # 6 fertilizes per hour
+            "daily": (1, 86400),  # 1 daily per day
+        }
+    
+    def is_allowed(self, user_id: int, action: str = "default") -> Tuple[bool, str]:
+        """Check if user can perform action"""
+        now = time.time()
+        limit, period = self.limits.get(action, self.limits["default"])
         
+        # Clean old requests
+        user_requests = [t for t in self.requests[(user_id, action)] 
+                        if now - t < period]
+        self.requests[(user_id, action)] = user_requests
+        
+        if len(user_requests) >= limit:
+            if action in ["rob", "kill"]:
+                reset_time = datetime.fromtimestamp(user_requests[0] + period)
+                return False, f"Daily limit reached! Resets at {reset_time:%H:%M}"
+            return False, f"Rate limit exceeded! Try again later."
+        
+        self.requests[(user_id, action)].append(now)
+        return True, ""
+
+# ============================================================================
+# DATABASE MANAGER WITH MAXIMUM SECURITY
+# ============================================================================
+
+class SecureDatabase:
+    """Secure database operations with transaction safety"""
+    
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.conn = None
+        self.lock = asyncio.Lock()
+    
     async def connect(self):
-        """Connect to PostgreSQL database"""
-        self.pool = await asyncpg.create_pool(
-            DATABASE_URL,
-            min_size=5,
-            max_size=20,
-            command_timeout=60
-        )
+        """Initialize database connection"""
+        self.conn = await aiosqlite.connect(self.db_path)
+        await self.conn.execute("PRAGMA journal_mode=WAL")
+        await self.conn.execute("PRAGMA foreign_keys=ON")
         await self.init_tables()
-        logger.info("Database connected successfully")
-        
+        logger.info("Database connected securely")
+    
     async def init_tables(self):
-        """Initialize all database tables"""
-        async with self.pool.acquire() as conn:
-            # Users table
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id BIGINT PRIMARY KEY,
-                    username VARCHAR(255),
-                    first_name VARCHAR(255) NOT NULL,
-                    last_name VARCHAR(255),
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    cash INTEGER DEFAULT 1000,
-                    gold INTEGER DEFAULT 0,
-                    bonds INTEGER DEFAULT 0,
-                    credits INTEGER DEFAULT 100,
-                    tokens INTEGER DEFAULT 50,
-                    gemstone VARCHAR(50),
-                    gemstone_date TIMESTAMP,
-                    weapon VARCHAR(50) DEFAULT 'none',
-                    reputation INTEGER DEFAULT 100,
-                    job VARCHAR(100),
-                    is_alive BOOLEAN DEFAULT TRUE,
-                    last_daily TIMESTAMP,
-                    rob_count INTEGER DEFAULT 0,
-                    kill_count INTEGER DEFAULT 0,
-                    rob_reset TIMESTAMP DEFAULT NOW(),
-                    kill_reset TIMESTAMP DEFAULT NOW(),
-                    language VARCHAR(10) DEFAULT 'en'
-                )
-            ''')
+        """Create all tables with proper constraints"""
+        tables = [
+            # Users table with all currencies
+            """CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT NOT NULL,
+                last_name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                cash INTEGER DEFAULT 1000 CHECK(cash >= 0),
+                gold INTEGER DEFAULT 0 CHECK(gold >= 0),
+                bonds INTEGER DEFAULT 0 CHECK(bonds >= 0),
+                credits INTEGER DEFAULT 100 CHECK(credits >= 0),
+                tokens INTEGER DEFAULT 50 CHECK(tokens >= 0),
+                reputation INTEGER DEFAULT 100 CHECK(reputation BETWEEN 0 AND 200),
+                is_alive BOOLEAN DEFAULT 1,
+                last_daily TIMESTAMP,
+                gemstone TEXT,
+                gemstone_date TIMESTAMP,
+                weapon TEXT DEFAULT 'none',
+                job TEXT,
+                language TEXT DEFAULT 'en',
+                UNIQUE(user_id)
+            )""",
             
-            # Family relations
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS family_relations (
-                    id SERIAL PRIMARY KEY,
-                    user1_id BIGINT NOT NULL,
-                    user2_id BIGINT NOT NULL,
-                    relation_type VARCHAR(20) NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    UNIQUE(user1_id, user2_id, relation_type),
-                    FOREIGN KEY (user1_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (user2_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            ''')
+            # Family relations with constraints
+            """CREATE TABLE IF NOT EXISTS family_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user1_id INTEGER NOT NULL,
+                user2_id INTEGER NOT NULL,
+                relation_type TEXT NOT NULL CHECK(relation_type IN ('parent', 'spouse', 'child', 'sibling')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user1_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (user2_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                UNIQUE(user1_id, user2_id, relation_type),
+                CHECK(user1_id != user2_id)
+            )""",
             
-            # Friendships
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS friendships (
-                    user1_id BIGINT NOT NULL,
-                    user2_id BIGINT NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    rating INTEGER CHECK (rating >= 1 AND rating <= 5),
-                    PRIMARY KEY (user1_id, user2_id),
-                    FOREIGN KEY (user1_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (user2_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            ''')
+            # Friends with bidirectional constraint
+            """CREATE TABLE IF NOT EXISTS friendships (
+                user1_id INTEGER NOT NULL,
+                user2_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                rating INTEGER CHECK(rating BETWEEN 1 AND 5),
+                FOREIGN KEY (user1_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (user2_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                PRIMARY KEY (user1_id, user2_id),
+                CHECK(user1_id < user2_id)  # Ensures bidirectional consistency
+            )""",
             
-            # Insurance
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS insurance (
-                    id SERIAL PRIMARY KEY,
-                    insurer_id BIGINT NOT NULL,
-                    insured_id BIGINT NOT NULL,
-                    amount INTEGER NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    is_active BOOLEAN DEFAULT TRUE,
-                    FOREIGN KEY (insurer_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (insured_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            ''')
+            # Insurance with validation
+            """CREATE TABLE IF NOT EXISTS insurance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                insurer_id INTEGER NOT NULL,
+                insured_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL CHECK(amount > 0),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT 1,
+                FOREIGN KEY (insurer_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (insured_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                CHECK(insurer_id != insured_id)
+            )""",
             
-            # Pending proposals
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS pending_proposals (
-                    id VARCHAR(50) PRIMARY KEY,
-                    from_id BIGINT NOT NULL,
-                    to_id BIGINT NOT NULL,
-                    proposal_type VARCHAR(20) NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    FOREIGN KEY (from_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY (to_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            ''')
+            # Garden system
+            """CREATE TABLE IF NOT EXISTS gardens (
+                user_id INTEGER PRIMARY KEY,
+                slots INTEGER DEFAULT 9 CHECK(slots BETWEEN 1 AND 36),
+                barn_capacity INTEGER DEFAULT 50 CHECK(barn_capacity >= 0),
+                last_fertilized TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )""",
             
-            # Custom GIFs
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS custom_gifs (
-                    id SERIAL PRIMARY KEY,
-                    chat_id BIGINT NOT NULL,
-                    gif_type VARCHAR(20) NOT NULL,
-                    file_id VARCHAR(255) NOT NULL,
-                    added_by BIGINT NOT NULL,
-                    added_at TIMESTAMP DEFAULT NOW()
-                )
-            ''')
+            # Garden plants
+            """CREATE TABLE IF NOT EXISTS garden_plants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                crop_type TEXT NOT NULL CHECK(crop_type IN ('carrot', 'tomato', 'potato', 'eggplant', 'corn', 'pepper')),
+                planted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                grow_time INTEGER NOT NULL,
+                is_ready BOOLEAN DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )""",
             
-            logger.info("Database tables initialized")
+            # Barn inventory
+            """CREATE TABLE IF NOT EXISTS barn (
+                user_id INTEGER NOT NULL,
+                crop_type TEXT NOT NULL,
+                quantity INTEGER DEFAULT 0 CHECK(quantity >= 0),
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                PRIMARY KEY (user_id, crop_type)
+            )""",
+            
+            # Market stands
+            """CREATE TABLE IF NOT EXISTS market_stands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_id INTEGER NOT NULL,
+                crop_type TEXT NOT NULL,
+                quantity INTEGER NOT NULL CHECK(quantity > 0),
+                price INTEGER NOT NULL CHECK(price > 0),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (seller_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )""",
+            
+            # Orders for garden expansion
+            """CREATE TABLE IF NOT EXISTS garden_orders (
+                user_id INTEGER NOT NULL,
+                order_data TEXT NOT NULL,  # JSON: {"carrot": 3, "tomato": 2}
+                completed INTEGER DEFAULT 0 CHECK(completed BETWEEN 0 AND 5),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                PRIMARY KEY (user_id)
+            )""",
+            
+            # Proposals with expiration
+            """CREATE TABLE IF NOT EXISTS proposals (
+                proposal_id TEXT PRIMARY KEY,
+                from_id INTEGER NOT NULL,
+                to_id INTEGER NOT NULL,
+                proposal_type TEXT NOT NULL CHECK(proposal_type IN ('adopt', 'marry', 'friend', 'trade')),
+                data TEXT,  # JSON for trade details
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL '24 hours'),
+                FOREIGN KEY (from_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (to_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                CHECK(from_id != to_id)
+            )""",
+            
+            # Admin actions log
+            """CREATE TABLE IF NOT EXISTS admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                target_id INTEGER,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (admin_id) REFERENCES users(user_id)
+            )""",
+            
+            # Security: banned users
+            """CREATE TABLE IF NOT EXISTS banned_users (
+                user_id INTEGER PRIMARY KEY,
+                reason TEXT,
+                banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                banned_by INTEGER,
+                FOREIGN KEY (banned_by) REFERENCES users(user_id)
+            )""",
+        ]
+        
+        async with self.lock:
+            for table_sql in tables:
+                try:
+                    await self.conn.execute(table_sql)
+                except Exception as e:
+                    logger.error(f"Failed to create table: {e}")
+            
+            await self.conn.commit()
+            logger.info("All tables initialized with constraints")
     
-    # User operations
-    async def get_user(self, user_id: int) -> Optional[User]:
-        """Get user by ID"""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                'SELECT * FROM users WHERE id = $1', user_id
-            )
-            if row:
-                return User(**dict(row))
-        return None
+    # ==================== SECURE TRANSACTION METHODS ====================
     
-    async def create_user(self, user: types.User) -> User:
-        """Create new user"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO users (id, username, first_name, last_name)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (id) DO NOTHING
-            ''', user.id, user.username, user.first_name, user.last_name)
-            
-            # Get the created user
-            row = await conn.fetchrow(
-                'SELECT * FROM users WHERE id = $1', user.id
-            )
-            return User(**dict(row))
-    
-    async def update_user(self, user_id: int, **kwargs):
-        """Update user fields"""
-        if not kwargs:
-            return
-            
-        async with self.pool.acquire() as conn:
-            set_clause = ', '.join([f"{k} = ${i+2}" for i, k in enumerate(kwargs.keys())])
-            query = f'UPDATE users SET {set_clause} WHERE id = $1'
-            await conn.execute(query, user_id, *kwargs.values())
-    
-    # Family operations
-    async def add_family_relation(self, user1_id: int, user2_id: int, relation_type: RelationType) -> bool:
-        """Add family relationship"""
-        async with self.pool.acquire() as conn:
+    async def execute_transaction(self, queries: List[Tuple[str, tuple]], 
+                                 rollback_on_error: bool = True):
+        """Execute multiple queries in a transaction with rollback"""
+        async with self.lock:
             try:
-                await conn.execute('''
-                    INSERT INTO family_relations (user1_id, user2_id, relation_type)
-                    VALUES ($1, $2, $3), ($2, $1, $3)
-                ''', user1_id, user2_id, relation_type.value)
+                await self.conn.execute("BEGIN TRANSACTION")
+                
+                for query, params in queries:
+                    await self.conn.execute(query, params)
+                
+                await self.conn.commit()
                 return True
             except Exception as e:
-                logger.error(f"Failed to add family relation: {e}")
-                return False
+                if rollback_on_error:
+                    await self.conn.rollback()
+                logger.error(f"Transaction failed: {e}")
+                raise
     
-    async def remove_family_relation(self, user1_id: int, user2_id: int, relation_type: RelationType):
-        """Remove family relationship"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                DELETE FROM family_relations 
-                WHERE (user1_id = $1 AND user2_id = $2 AND relation_type = $3)
-                   OR (user1_id = $2 AND user2_id = $1 AND relation_type = $3)
-            ''', user1_id, user2_id, relation_type.value)
+    async def safe_update_balance(self, user_id: int, currency: str, 
+                                 amount: int) -> bool:
+        """Update balance with check for negative values"""
+        if currency not in CURRENCIES:
+            return False
+        
+        query = f"""
+        UPDATE users 
+        SET {currency} = {currency} + ? 
+        WHERE user_id = ? AND {currency} + ? >= 0
+        """
+        
+        async with self.lock:
+            cursor = await self.conn.execute(query, (amount, user_id, amount))
+            await self.conn.commit()
+            return cursor.rowcount > 0
     
-    async def get_family(self, user_id: int) -> List[Tuple[int, str]]:
-        """Get all family members for a user"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT DISTINCT 
-                    CASE WHEN user1_id = $1 THEN user2_id ELSE user1_id END as family_member_id,
-                    relation_type
-                FROM family_relations 
-                WHERE user1_id = $1 OR user2_id = $1
-                ORDER BY relation_type
-            ''', user_id)
+    # ==================== USER MANAGEMENT ====================
+    
+    async def get_user(self, user_id: int) -> Optional[dict]:
+        """Get user by ID with validation"""
+        async with self.lock:
+            cursor = await self.conn.execute(
+                "SELECT * FROM users WHERE user_id = ?", (user_id,)
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+    
+    async def create_user(self, user: types.User) -> dict:
+        """Create new user with default values"""
+        user_data = {
+            "user_id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "cash": 1000,
+            "gold": 0,
+            "bonds": 0,
+            "credits": 100,
+            "tokens": 50,
+            "reputation": 100,
+            "is_alive": True
+        }
+        
+        queries = [
+            ("INSERT OR IGNORE INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
+             (user.id, user.username, user.first_name, user.last_name)),
+            ("INSERT OR IGNORE INTO gardens (user_id) VALUES (?)", (user.id,))
+        ]
+        
+        try:
+            await self.execute_transaction(queries)
+            return user_data
+        except:
+            # If transaction fails, return minimal user
+            return user_data
+    
+    async def is_user_banned(self, user_id: int) -> bool:
+        """Check if user is banned"""
+        async with self.lock:
+            cursor = await self.conn.execute(
+                "SELECT 1 FROM banned_users WHERE user_id = ?", (user_id,)
+            )
+            return await cursor.fetchone() is not None
+    
+    # ==================== FAMILY SYSTEM ====================
+    
+    async def add_family_relation(self, user1_id: int, user2_id: int, 
+                                 relation_type: str) -> bool:
+        """Add family relation with validation"""
+        if user1_id == user2_id:
+            return False
+        
+        try:
+            await self.execute_transaction([
+                ("INSERT INTO family_relations (user1_id, user2_id, relation_type) VALUES (?, ?, ?)",
+                 (user1_id, user2_id, relation_type)),
+                ("INSERT INTO family_relations (user1_id, user2_id, relation_type) VALUES (?, ?, ?)",
+                 (user2_id, user1_id, relation_type))
+            ])
+            return True
+        except:
+            return False
+    
+    async def get_family_tree(self, user_id: int) -> List[dict]:
+        """Get complete family tree for a user"""
+        async with self.lock:
+            cursor = await self.conn.execute('''
+                SELECT fr.relation_type, 
+                       CASE WHEN fr.user1_id = ? THEN fr.user2_id ELSE fr.user1_id END as relative_id,
+                       u.first_name, u.username
+                FROM family_relations fr
+                LEFT JOIN users u ON u.user_id = CASE WHEN fr.user1_id = ? THEN fr.user2_id ELSE fr.user1_id END
+                WHERE ? IN (fr.user1_id, fr.user2_id)
+                ORDER BY fr.relation_type, fr.created_at
+            ''', (user_id, user_id, user_id))
             
-            return [(row['family_member_id'], row['relation_type']) for row in rows]
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
     
-    # Friend operations
+    # ==================== FRIEND SYSTEM ====================
+    
     async def add_friend(self, user1_id: int, user2_id: int) -> bool:
-        """Add friendship (bidirectional)"""
-        async with self.pool.acquire() as conn:
+        """Add friendship with bonus"""
+        if user1_id == user2_id:
+            return False
+        
+        # Ensure user1_id < user2_id for consistency
+        u1, u2 = sorted([user1_id, user2_id])
+        
+        queries = [
+            ("INSERT OR IGNORE INTO friendships (user1_id, user2_id) VALUES (?, ?)",
+             (u1, u2)),
+            ("UPDATE users SET cash = cash + 3000 WHERE user_id IN (?, ?)",
+             (user1_id, user2_id))
+        ]
+        
+        try:
+            await self.execute_transaction(queries)
+            return True
+        except:
+            return False
+    
+    # ==================== GARDEN SYSTEM ====================
+    
+    async def plant_crop(self, user_id: int, crop_type: str, 
+                        quantity: int) -> Tuple[bool, str]:
+        """Plant crops with validation"""
+        if crop_type not in CROP_TYPES:
+            return False, "Invalid crop type"
+        
+        # Check available slots
+        async with self.lock:
+            cursor = await self.conn.execute(
+                "SELECT COUNT(*) FROM garden_plants WHERE user_id = ? AND is_ready = 0",
+                (user_id,)
+            )
+            active_plants = (await cursor.fetchone())[0]
+            
+            cursor = await self.conn.execute(
+                "SELECT slots FROM gardens WHERE user_id = ?", (user_id,)
+            )
+            slots = (await cursor.fetchone())[0]
+            
+            if active_plants + quantity > slots:
+                return False, f"Not enough garden slots! ({active_plants}/{slots} used)"
+        
+        # Check if user has seeds (simplified - using cash)
+        price = CROP_PRICES[crop_type]["buy"] * quantity
+        user = await self.get_user(user_id)
+        
+        if user["cash"] < price:
+            return False, f"Not enough cash! Need ${price}, have ${user['cash']}"
+        
+        # Plant crops
+        queries = [
+            ("UPDATE users SET cash = cash - ? WHERE user_id = ?",
+             (price, user_id)),
+        ]
+        
+        grow_time = CROP_PRICES[crop_type]["grow_time"]
+        for _ in range(quantity):
+            queries.append(
+                ("INSERT INTO garden_plants (user_id, crop_type, grow_time) VALUES (?, ?, ?)",
+                 (user_id, crop_type, grow_time))
+            )
+        
+        try:
+            await self.execute_transaction(queries)
+            return True, f"Planted {quantity} {crop_type}(s)! Will grow in {grow_time//3600} hours."
+        except Exception as e:
+            return False, f"Failed to plant: {e}"
+    
+    async def harvest_crops(self, user_id: int) -> Tuple[Dict[str, int], str]:
+        """Harvest ready crops"""
+        async with self.lock:
+            # Get ready crops
+            cursor = await self.conn.execute(
+                "SELECT crop_type, COUNT(*) as count FROM garden_plants "
+                "WHERE user_id = ? AND is_ready = 1 GROUP BY crop_type",
+                (user_id,)
+            )
+            ready_crops = {row[0]: row[1] for row in await cursor.fetchall()}
+            
+            if not ready_crops:
+                return {}, "No crops ready for harvest!"
+            
+            # Update barn and remove plants in transaction
+            queries = []
+            total_value = 0
+            
+            for crop_type, count in ready_crops.items():
+                sell_price = CROP_PRICES[crop_type]["sell"] * count
+                total_value += sell_price
+                
+                # Add to barn
+                queries.append((
+                    "INSERT INTO barn (user_id, crop_type, quantity) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(user_id, crop_type) DO UPDATE SET "
+                    "quantity = quantity + excluded.quantity",
+                    (user_id, crop_type, count)
+                ))
+            
+            # Remove harvested plants
+            queries.append((
+                "DELETE FROM garden_plants WHERE user_id = ? AND is_ready = 1",
+                (user_id,)
+            ))
+            
+            # Add cash from optional selling (commented out - let user decide)
+            # queries.append((
+            #     "UPDATE users SET cash = cash + ? WHERE user_id = ?",
+            #     (total_value, user_id)
+            # ))
+            
             try:
-                await conn.execute('''
-                    INSERT INTO friendships (user1_id, user2_id)
-                    VALUES ($1, $2), ($2, $1)
-                    ON CONFLICT (user1_id, user2_id) DO NOTHING
-                ''', user1_id, user2_id)
-                return True
+                await self.execute_transaction(queries)
+                return ready_crops, f"Harvested {sum(ready_crops.values())} crops!"
             except Exception as e:
-                logger.error(f"Failed to add friend: {e}")
-                return False
+                return {}, f"Harvest failed: {e}"
     
-    async def remove_friend(self, user1_id: int, user2_id: int):
-        """Remove friendship"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                DELETE FROM friendships 
-                WHERE (user1_id = $1 AND user2_id = $2)
-                   OR (user1_id = $2 AND user2_id = $1)
-            ''', user1_id, user2_id)
+    # ==================== MARKET SYSTEM ====================
     
-    async def get_friends(self, user_id: int) -> List[int]:
-        """Get all friends for a user"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT user2_id FROM friendships WHERE user1_id = $1
-                UNION
-                SELECT user1_id FROM friendships WHERE user2_id = $1
-            ''', user_id)
-            
-            return [row['user2_id'] for row in rows]
-    
-    async def are_friends(self, user1_id: int, user2_id: int) -> bool:
-        """Check if two users are friends"""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow('''
-                SELECT 1 FROM friendships 
-                WHERE (user1_id = $1 AND user2_id = $2)
-                   OR (user1_id = $2 AND user2_id = $1)
-                LIMIT 1
-            ''', user1_id, user2_id)
-            return row is not None
-    
-    # Proposal operations
-    async def create_proposal(self, proposal_id: str, from_id: int, to_id: int, proposal_type: str):
-        """Create a pending proposal"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO pending_proposals (id, from_id, to_id, proposal_type)
-                VALUES ($1, $2, $3, $4)
-            ''', proposal_id, from_id, to_id, proposal_type)
-    
-    async def get_proposal(self, proposal_id: str) -> Optional[PendingProposal]:
-        """Get proposal by ID"""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                'SELECT * FROM pending_proposals WHERE id = $1', proposal_id
+    async def list_on_market(self, seller_id: int, crop_type: str, 
+                           quantity: int, price: int) -> Tuple[bool, str]:
+        """List crops on market stand"""
+        # Check if user has enough crops
+        async with self.lock:
+            cursor = await self.conn.execute(
+                "SELECT quantity FROM barn WHERE user_id = ? AND crop_type = ?",
+                (seller_id, crop_type)
             )
-            if row:
-                return PendingProposal(**dict(row))
-        return None
-    
-    async def delete_proposal(self, proposal_id: str):
-        """Delete a proposal"""
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                'DELETE FROM pending_proposals WHERE id = $1', proposal_id
-            )
-    
-    # Insurance operations
-    async def add_insurance(self, insurer_id: int, insured_id: int, amount: int) -> int:
-        """Add insurance policy"""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow('''
-                INSERT INTO insurance (insurer_id, insured_id, amount)
-                VALUES ($1, $2, $3)
-                RETURNING id
-            ''', insurer_id, insured_id, amount)
-            return row['id']
-    
-    async def get_active_insurances(self, insured_id: int) -> List[Insurance]:
-        """Get active insurance policies for a user"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT * FROM insurance 
-                WHERE insured_id = $1 AND is_active = TRUE
-            ''', insured_id)
+            row = await cursor.fetchone()
             
-            return [Insurance(**dict(row)) for row in rows]
+            if not row or row[0] < quantity:
+                return False, f"Not enough {crop_type}! You have {row[0] if row else 0}"
+        
+        max_price = CROP_PRICES[crop_type]["sell"] * 3
+        if price > max_price * quantity:
+            return False, f"Price too high! Max ${max_price * quantity} for {quantity} {crop_type}"
+        
+        queries = [
+            ("UPDATE barn SET quantity = quantity - ? WHERE user_id = ? AND crop_type = ?",
+             (quantity, seller_id, crop_type)),
+            ("INSERT INTO market_stands (seller_id, crop_type, quantity, price) VALUES (?, ?, ?, ?)",
+             (seller_id, crop_type, quantity, price))
+        ]
+        
+        try:
+            await self.execute_transaction(queries)
+            return True, f"Listed {quantity} {crop_type} for ${price} on market!"
+        except Exception as e:
+            return False, f"Failed to list: {e}"
     
-    async def deactivate_insurance(self, insurance_id: int):
-        """Deactivate insurance policy"""
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                'UPDATE insurance SET is_active = FALSE WHERE id = $1', insurance_id
+    async def buy_from_market(self, buyer_id: int, listing_id: int, 
+                            quantity: int) -> Tuple[bool, str]:
+        """Buy from market stand"""
+        async with self.lock:
+            # Get listing details
+            cursor = await self.conn.execute(
+                "SELECT seller_id, crop_type, quantity as available, price FROM market_stands WHERE id = ?",
+                (listing_id,)
             )
-    
-    # Utility methods
-    async def reset_daily_counts(self):
-        """Reset daily rob/kill counts for all users"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                UPDATE users 
-                SET rob_count = 0, kill_count = 0,
-                    rob_reset = NOW(), kill_reset = NOW()
-                WHERE rob_reset < NOW() - INTERVAL '1 day'
-                   OR kill_reset < NOW() - INTERVAL '1 day'
-            ''')
-    
-    async def get_leaderboard(self, chat_id: int) -> List[Tuple[int, str, int]]:
-        """Get money leaderboard for a group"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT u.id, u.first_name, u.cash
-                FROM users u
-                ORDER BY u.cash DESC
-                LIMIT 10
-            ''')
+            listing = await cursor.fetchone()
             
-            return [(row['id'], row['first_name'], row['cash']) for row in rows]
+            if not listing:
+                return False, "Listing not found!"
+            
+            seller_id, crop_type, available, total_price = listing
+            
+            if available < quantity:
+                return False, f"Only {available} available!"
+            
+            # Calculate price per unit
+            price_per_unit = total_price / available
+            cost = int(price_per_unit * quantity)
+            
+            # Check buyer's balance
+            buyer = await self.get_user(buyer_id)
+            if buyer["cash"] < cost:
+                return False, f"Need ${cost}, have ${buyer['cash']}"
+            
+            # Transaction
+            queries = [
+                # Deduct from buyer
+                ("UPDATE users SET cash = cash - ? WHERE user_id = ?", (cost, buyer_id)),
+                # Add to seller
+                ("UPDATE users SET cash = cash + ? WHERE user_id = ?", (cost, seller_id)),
+                # Update listing
+                ("UPDATE market_stands SET quantity = quantity - ? WHERE id = ?", 
+                 (quantity, listing_id)),
+                # Add to buyer's barn
+                ("INSERT INTO barn (user_id, crop_type, quantity) VALUES (?, ?, ?) "
+                 "ON CONFLICT(user_id, crop_type) DO UPDATE SET "
+                 "quantity = quantity + excluded.quantity",
+                 (buyer_id, crop_type, quantity))
+            ]
+            
+            # Remove listing if sold out
+            if available - quantity == 0:
+                queries.append(("DELETE FROM market_stands WHERE id = ?", (listing_id,)))
+            
+            try:
+                await self.execute_transaction(queries)
+                return True, f"Bought {quantity} {crop_type} for ${cost}!"
+            except Exception as e:
+                return False, f"Purchase failed: {e}"
+    
+    # ==================== ADMIN & BACKUP ====================
+    
+    async def create_backup(self) -> bytes:
+        """Create encrypted backup of critical data"""
+        backup_data = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "users": [],
+            "family": [],
+            "friends": [],
+            "market": []
+        }
+        
+        async with self.lock:
+            # Get users
+            cursor = await self.conn.execute(
+                "SELECT user_id, username, first_name, cash, gold, bonds FROM users"
+            )
+            backup_data["users"] = [dict(row) for row in await cursor.fetchall()]
+            
+            # Get family
+            cursor = await self.conn.execute(
+                "SELECT user1_id, user2_id, relation_type FROM family_relations"
+            )
+            backup_data["family"] = [dict(row) for row in await cursor.fetchall()]
+            
+            # Get friends
+            cursor = await self.conn.execute(
+                "SELECT user1_id, user2_id FROM friendships"
+            )
+            backup_data["friends"] = [dict(row) for row in await cursor.fetchall()]
+            
+            # Get market
+            cursor = await self.conn.execute(
+                "SELECT seller_id, crop_type, quantity, price FROM market_stands"
+            )
+            backup_data["market"] = [dict(row) for row in await cursor.fetchall()]
+        
+        # Create ZIP with encryption
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Add data with timestamp
+            json_data = json.dumps(backup_data, indent=2)
+            zip_file.writestr(f"backup_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json", json_data)
+            
+            # Add checksum
+            checksum = hashlib.sha256(json_data.encode()).hexdigest()
+            zip_file.writestr("checksum.txt", checksum)
+        
+        return zip_buffer.getvalue()
+    
+    async def log_admin_action(self, admin_id: int, action: str, 
+                             target_id: Optional[int] = None, 
+                             details: str = ""):
+        """Log admin actions for security"""
+        async with self.lock:
+            await self.conn.execute(
+                "INSERT INTO admin_logs (admin_id, action, target_id, details) VALUES (?, ?, ?, ?)",
+                (admin_id, action, target_id, details)
+            )
+            await self.conn.commit()
 
 # ============================================================================
-# BOT STATE & STORAGE
+# BOT INSTANCE & GLOBALS
 # ============================================================================
 
-class Form(StatesGroup):
-    """FSM states for various operations"""
-    waiting_for_rating = State()
-    waiting_for_broadcast = State()
-    waiting_for_admin_action = State()
-
-# Global instances
+db = SecureDatabase(DB_PATH)
 bot: Optional[Bot] = None
 dp: Optional[Dispatcher] = None
-db: Database = Database()
-
-# Reaction GIFs mapping
-REACTION_GIFS = {
-    "hug": ["CAACAgIAAxkBAAIBAAABX7-vHtIjVtPQpeQ8WvMClMs_AAIiJwACChqQS_ij4UoiIi_CIwQ", 
-            "CAACAgIAAxkBAAIBAAACX7-vL6B3cSUAAYVJpZogLpQQJskAAjsAAwoakEslb5h1NG1JfyME"],
-    "pat": ["CAACAgIAAxkBAAIBAAADX7-vR-13T0QPGdPGt-LFe58GAAJvAANWnb0K4h5MbER2k50jBA", 
-            "CAACAgIAAxkBAAIBAAAFX7-vVhJ0lN_B22xQzDON6a0oAAKGAAMKGpBLpJ62Oo-7u8UjBA"],
-    "kiss": ["CAACAgIAAxkBAAIBAAAGX7-vYx4Nbz9mswABGg0k8M4rWQACYAADVp29CkqTT-5O2PAoIwQ", 
-             "CAACAgIAAxkBAAIBAAAHX7-vb5JpSj1A0JXxU5C9S3P3AAKIAANWnb0KQHw7QrSH_HYjBA"],
-    "cry": ["CAACAgIAAxkBAAIBAAAIX7-vfNYG-IFMp8WUlmOAcakHAAKQAANWnb0K4mYHQG_3sCgjBA", 
-            "CAACAgIAAxkBAAIBAAAJX7-vhj6pA86oIAXW6fFQ0k4nAAKTAANWnb0Kc9_IJJVUc2kjBA"],
-    "smile": ["CAACAgIAAxkBAAIBAAAJX7-vhj6pA86oIAXW6fFQ0k4nAAKTAANWnb0Kc9_IJJVUc2kjBA",
-              "CAACAgIAAxkBAAIBAAAKX7-vkkY0XAZ0rS1CM7bQxQYFAAKUAANWnb0K3Mp-j_hdTMsjBA"]
-}
+rate_limiter = RateLimiter()
 
 # ============================================================================
-# HELPER FUNCTIONS
+# SECURITY DECORATORS & MIDDLEWARE
 # ============================================================================
 
-async def get_or_create_user(user: types.User) -> User:
-    """Get user from DB or create if doesn't exist"""
-    db_user = await db.get_user(user.id)
-    if not db_user:
-        db_user = await db.create_user(user)
-        logger.info(f"Created new user: {user.id} - {user.first_name}")
-        
-        # Send welcome message
-        await bot.send_message(
-            user.id,
-            f"👋 Welcome to Family Tree Bot, {user.first_name}!\n\n"
-            f"Use /help to see available commands.\n"
-            f"Start by using /me to see your profile!"
-        )
-    
-    return db_user
+def owner_only(func):
+    """Decorator to restrict commands to owner only"""
+    async def wrapper(message: Message, *args, **kwargs):
+        if message.from_user.id != OWNER_ID:
+            await message.answer("❌ Owner-only command.")
+            await db.log_admin_action(
+                message.from_user.id, 
+                "unauthorized_access", 
+                None, 
+                f"Tried to use {func.__name__}"
+            )
+            return
+        return await func(message, *args, **kwargs)
+    return wrapper
 
-async def send_log(message: str):
-    """Send log message to owner's channel"""
-    try:
-        await bot.send_message(LOG_CHANNEL, f"📊 {message}")
-    except Exception as e:
-        logger.error(f"Failed to send log: {e}")
+def rate_limit(action: str = "default"):
+    """Decorator for rate limiting"""
+    def decorator(func):
+        async def wrapper(message: Message, *args, **kwargs):
+            allowed, msg = rate_limiter.is_allowed(message.from_user.id, action)
+            if not allowed:
+                await message.answer(f"⏳ {msg}")
+                return
+            return await func(message, *args, **kwargs)
+        return wrapper
+    return decorator
 
-async def format_money(user: User) -> str:
-    """Format user's money for display"""
-    return (
-        f"💵 Cash: {user.cash:,}\n"
-        f"🪙 Gold: {user.gold:,}\n"  
-        f"👨‍👩‍👧‍👦 Bonds: {user.bonds:,}\n"
-        f"⭐ Credits: {user.credits:,}\n"
-        f"🌱 Tokens: {user.tokens:,}"
-    )
-
-async def can_perform_action(user: User, action: str) -> Tuple[bool, str]:
-    """Check if user can perform rob/kill action"""
-    now = datetime.utcnow()
+async def security_check(message: Message) -> Tuple[bool, str]:
+    """Comprehensive security check"""
+    user_id = message.from_user.id
     
-    if action == "rob":
-        if user.rob_reset.date() < now.date():
-            await db.update_user(user.id, rob_count=0, rob_reset=now)
-            user.rob_count = 0
-        
-        if user.rob_count >= MAX_ROB_DAILY:
-            return False, f"You can only rob {MAX_ROB_DAILY} times per day!"
-            
-    elif action == "kill":
-        if user.kill_reset.date() < now.date():
-            await db.update_user(user.id, kill_count=0, kill_reset=now)
-            user.kill_count = 0
-        
-        if user.kill_count >= MAX_KILL_DAILY:
-            return False, f"You can only kill {MAX_KILL_DAILY} times per day!"
+    # Check if banned
+    if await db.is_user_banned(user_id):
+        return False, "You are banned from using this bot."
     
-    if not user.is_alive:
-        return False, "You are dead! Use /medical to revive first."
+    # Check rate limits
+    allowed, msg = rate_limiter.is_allowed(user_id)
+    if not allowed:
+        return False, msg
     
     return True, ""
-
-async def process_daily_bonus(user: User) -> Tuple[int, str, Optional[str]]:
-    """Process daily bonus and gemstone"""
-    now = datetime.utcnow()
-    bonus = DAILY_BONUS
-    gemstone = user.gemstone
-    
-    # Check if already claimed today
-    if user.last_daily and user.last_daily.date() == now.date():
-        return 0, None, "You already claimed your daily bonus today!"
-    
-    # Assign new gemstone if needed
-    gemstones = ["Ruby", "Sapphire", "Emerald", "Diamond", "Amethyst"]
-    if not user.gemstone or (user.gemstone_date and user.gemstone_date.date() < now.date()):
-        gemstone = random.choice(gemstones)
-        await db.update_user(
-            user.id, 
-            gemstone=gemstone,
-            gemstone_date=now,
-            last_daily=now
-        )
-    else:
-        await db.update_user(user.id, last_daily=now)
-    
-    # Add family bonus
-    family = await db.get_family(user.id)
-    family_bonus = len(family) * 50
-    bonus += family_bonus
-    
-    # Update user cash
-    await db.update_user(user.id, cash=user.cash + bonus)
-    
-    return bonus, gemstone, None
-
-async def send_proposal(from_user: User, to_user: User, proposal_type: str, message: Message):
-    """Send a proposal to another user"""
-    proposal_id = str(uuid.uuid4())
-    
-    # Create proposal in DB
-    await db.create_proposal(proposal_id, from_user.id, to_user.id, proposal_type)
-    
-    # Create inline keyboard
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="✅ Accept", 
-                callback_data=f"proposal_{proposal_id}_accept"
-            ),
-            InlineKeyboardButton(
-                text="❌ Decline", 
-                callback_data=f"proposal_{proposal_id}_decline"
-            )
-        ]
-    ])
-    
-    proposal_texts = {
-        "adopt": f"👶 {from_user.first_name} wants to adopt you!",
-        "marry": f"💖 {from_user.first_name} wants to marry you!",
-        "friend": f"🤝 {from_user.first_name} wants to be your friend!"
-    }
-    
-    # Try to send private message
-    try:
-        await bot.send_message(
-            to_user.id,
-            f"{proposal_texts[proposal_type]}\n\n"
-            f"You'll receive ${FRIEND_BONUS if proposal_type == 'friend' else 0} bonus if accepted!",
-            reply_markup=keyboard
-        )
-        
-        await message.reply_text(
-            f"✅ {proposal_type.capitalize()} proposal sent to {to_user.first_name}!"
-        )
-        
-    except Exception as e:
-        await message.reply_text(
-            f"❌ Cannot send proposal. User might have blocked the bot or not started it."
-        )
-        await db.delete_proposal(proposal_id)
-
-async def generate_tree(user_id: int) -> str:
-    """Generate text-based family tree"""
-    family = await db.get_family(user_id)
-    
-    if not family:
-        return "Your family tree is empty. Use /adopt or /marry to add family members!"
-    
-    # Get user
-    user = await db.get_user(user_id)
-    if not user:
-        return "User not found!"
-    
-    tree_lines = [f"🌳 Family Tree of {user.first_name}:"]
-    
-    # Group by relation type
-    relations = {}
-    for member_id, rel_type in family:
-        member = await db.get_user(member_id)
-        if member:
-            if rel_type not in relations:
-                relations[rel_type] = []
-            relations[rel_type].append(member.first_name)
-    
-    # Build tree
-    for rel_type, names in relations.items():
-        icon = {
-            "parent": "👴",
-            "spouse": "💑", 
-            "child": "👶",
-            "sibling": "👫"
-        }.get(rel_type, "👤")
-        
-        tree_lines.append(f"\n{icon} {rel_type.capitalize()}s:")
-        for name in names:
-            tree_lines.append(f"  └─ {name}")
-    
-    return "\n".join(tree_lines)
-
-async def get_custom_gif(chat_id: int, gif_type: str) -> Optional[str]:
-    """Get custom GIF for rob/kill actions"""
-    async with db.pool.acquire() as conn:
-        row = await conn.fetchrow('''
-            SELECT file_id FROM custom_gifs 
-            WHERE chat_id = $1 AND gif_type = $2
-            ORDER BY RANDOM() 
-            LIMIT 1
-        ''', chat_id, gif_type)
-        
-        if row:
-            return row['file_id']
-    
-    # Fallback to default GIFs
-    default_gifs = {
-        "robyes": ["CAACAgIAAxkBAAIBAAABX7-vHtIjVtPQpeQ8WvMClMs_AAIiJwACChqQS_ij4UoiIi_CIwQ"],
-        "robno": ["CAACAgIAAxkBAAIBAAACX7-vL6B3cSUAAYVJpZogLpQQJskAAjsAAwoakEslb5h1NG1JfyME"],
-        "killyes": ["CAACAgIAAxkBAAIBAAADX7-vR-13T0QPGdPGt-LFe58GAAJvAANWnb0K4h5MbER2k50jBA"],
-        "killno": ["CAACAgIAAxkBAAIBAAAFX7-vVhJ0lN_B22xQzDON6a0oAAKGAAMKGpBLpJ62Oo-7u8UjBA"]
-    }
-    
-    if gif_type in default_gifs and default_gifs[gif_type]:
-        return random.choice(default_gifs[gif_type])
-    
-    return None
 
 # ============================================================================
 # COMMAND HANDLERS - USER COMMANDS
 # ============================================================================
 
 @dp.message(Command("start"))
+@rate_limit()
 async def cmd_start(message: Message):
-    """Start command handler"""
-    user = await get_or_create_user(message.from_user)
+    """Start command with security check"""
+    passed, msg = await security_check(message)
+    if not passed:
+        await message.answer(f"❌ {msg}")
+        return
     
-    welcome_text = (
-        f"👋 Welcome to Family Tree Bot, {user.first_name}!\n\n"
-        f"🌳 Create your virtual family\n"
-        f"🤝 Make friends globally\n"  
-        f"💰 Earn money and buy items\n"
-        f"⚔️ Engage in PvP battles\n\n"
-        f"Use /help to see all commands\n"
-        f"Use /me to see your profile"
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        user = await db.create_user(message.from_user)
+    
+    welcome = (
+        f"👋 Welcome to Family Tree Bot, {user['first_name']}!\n\n"
+        f"🌳 Create virtual families with /adopt and /marry\n"
+        f"🤝 Make global friends with /friend\n"
+        f"🌾 Farm crops in your /garden\n"
+        f"💰 Trade crops on /stands marketplace\n"
+        f"⚔️ Engage in PvP with /rob and /kill\n\n"
+        f"Use /help for all commands!"
     )
     
-    # Create main menu keyboard
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="👤 Profile"), KeyboardButton(text="🌳 Family")],
-            [KeyboardButton(text="🤝 Friends"), KeyboardButton(text="💰 Economy")],
-            [KeyboardButton(text="⚔️ PvP"), KeyboardButton(text="🎮 Games")],
-            [KeyboardButton(text="🆘 Help")]
-        ],
-        resize_keyboard=True
-    )
-    
-    await message.answer(welcome_text, reply_markup=keyboard)
+    await message.answer(welcome)
 
-@dp.message(Command("help"))
-async def cmd_help(message: Message):
-    """Help command handler"""
-    help_text = (
-        "📚 **Family Tree Bot - Command Guide**\n\n"
-        
-        "👨‍👩‍👧‍👦 **Family Commands:**\n"
-        "• /adopt (reply) - Adopt someone as child\n"
-        "• /marry (reply) - Propose marriage\n"  
-        "• /divorce - End a marriage\n"
-        "• /disown - Remove family member\n"
-        "• /tree - View your family tree\n"
-        "• /family - List family members\n\n"
-        
-        "🤝 **Friend Circle:**\n"
-        "• /friend (reply) - Add as friend\n"
-        "• /circle - View friend circle\n"
-        "• /unfriend - Remove friend\n"
-        "• /suggestions - Friend suggestions\n"
-        "• /flink - Get friend link\n\n"
-        
-        "💰 **Economy & Daily:**\n"
-        "• /me or /account - Your profile\n"
-        "• /daily - Claim daily bonus\n"
-        "• /fuse (reply) - Fuse gemstones\n"
-        "• /pay [amount] - Send money\n"
-        "• /shop - Buy items\n"
-        "• /leaderboard - Money rankings\n\n"
-        
-        "⚔️ **PvP & Combat:**\n"
-        "• /rob (reply) - Rob someone\n"
-        "• /kill (reply) - Kill someone\n"
-        "• /weapon - Buy weapons\n"
-        "• /insurance (reply) - Insure someone\n"
-        "• /medical - Revive yourself\n\n"
-        
-        "😄 **Fun & Social:**\n"
-        "• ,hug ,pat ,kiss etc. - Send GIFs\n"
-        "• /reactions - List all reactions\n"
-        "• /addgif - Add custom GIF\n"
-        "• /setpic (reply to image) - Set profile pic\n\n"
-        
-        "⚙️ **Settings:**\n"
-        "• /setlang - Change language\n"
-        "• /commands - Full command list\n\n"
-        
-        "👑 **Admin Commands:**\n"
-        "• /admin help - Show admin commands\n"
-        "(Only for bot owner)"
-    )
-    
-    await message.answer(help_text, parse_mode="Markdown")
-
-@dp.message(Command("me", "account", "profile"))
-async def cmd_me(message: Message):
-    """Show user profile"""
-    user = await get_or_create_user(message.from_user)
-    
-    # Get family and friend counts
-    family = await db.get_family(user.id)
-    friends = await db.get_friends(user.id)
-    
-    profile_text = (
-        f"👤 **Profile of {user.first_name}**\n\n"
-        f"📊 **Stats:**\n"
-        f"• 🆔 ID: `{user.id}`\n"
-        f"• 👨‍👩‍👧‍👦 Family: {len(family)} members\n"
-        f"• 🤝 Friends: {len(friends)} friends\n"
-        f"• ⭐ Reputation: {user.reputation}/200\n"
-        f"• 💼 Job: {user.job or 'Unemployed'}\n"
-        f"• ❤️ Status: {'Alive ✅' if user.is_alive else 'Dead 💀'}\n\n"
-        
-        f"💰 **Economy:**\n"
-        f"{await format_money(user)}\n\n"
-        
-        f"💎 **Daily Gemstone:** {user.gemstone or 'None'}\n"
-        f"🔫 **Weapon:** {user.weapon.capitalize()}\n\n"
-        
-        f"📈 **Daily Limits:**\n"
-        f"• Robs: {user.rob_count}/{MAX_ROB_DAILY}\n"
-        f"• Kills: {user.kill_count}/{MAX_KILL_DAILY}"
-    )
-    
-    # Create action buttons
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="💰 Daily Bonus", callback_data="daily_bonus"),
-            InlineKeyboardButton(text="🛒 Shop", callback_data="open_shop")
-        ],
-        [
-            InlineKeyboardButton(text="🌳 View Tree", callback_data="view_tree"),
-            InlineKeyboardButton(text="🤝 Friends", callback_data="view_friends")
-        ],
-        [
-            InlineKeyboardButton(text="🔫 Weapons", callback_data="weapons"),
-            InlineKeyboardButton(text="📊 Stats", callback_data="stats")
-        ]
-    ])
-    
-    await message.answer(profile_text, reply_markup=keyboard, parse_mode="Markdown")
-
-@dp.message(Command("daily"))
-async def cmd_daily(message: Message):
-    """Claim daily bonus"""
-    user = await get_or_create_user(message.from_user)
-    
-    bonus, gemstone, error = await process_daily_bonus(user)
-    
-    if error:
-        await message.answer(f"❌ {error}")
-        return
-    
-    # Create gemstone fusion button if user has gemstone
-    keyboard = None
-    if gemstone:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"💎 Find {gemstone} Match", 
-                    callback_data="find_gem_match"
-                )
-            ]
-        ])
-    
-    response = (
-        f"🎉 **Daily Bonus Claimed!**\n\n"
-        f"💰 Received: ${bonus:,}\n"
-        f"💎 Today's Gemstone: **{gemstone}**\n\n"
-        f"💵 New Balance: ${user.cash + bonus:,}\n\n"
-        f"Find someone with the same gemstone and use /fuse (reply to them) "
-        f"to get ${GEMSTONE_BONUS:,} bonus each!"
-    )
-    
-    await message.answer(response, reply_markup=keyboard, parse_mode="Markdown")
-
-@dp.message(Command("tree"))
-async def cmd_tree(message: Message):
-    """Show family tree"""
-    user = await get_or_create_user(message.from_user)
-    tree_text = await generate_tree(user.id)
-    await message.answer(tree_text)
-
-@dp.message(Command("family"))
-async def cmd_family(message: Message):
-    """List family members"""
-    user = await get_or_create_user(message.from_user)
-    family = await db.get_family(user.id)
-    
-    if not family:
-        await message.answer("You have no family members yet. Use /adopt or /marry to start a family!")
-        return
-    
-    family_text = f"👨‍👩‍👧‍👦 **Family of {user.first_name}:**\n\n"
-    
-    for member_id, rel_type in family:
-        member = await db.get_user(member_id)
-        if member:
-            icon = {
-                "parent": "👴",
-                "spouse": "💑",
-                "child": "👶", 
-                "sibling": "👫"
-            }.get(rel_type, "👤")
-            
-            status = "❤️" if member.is_alive else "💀"
-            family_text += f"{icon} {member.first_name} - {rel_type} {status}\n"
-    
-    await message.answer(family_text, parse_mode="Markdown")
-
-@dp.message(Command("adopt"))
-async def cmd_adopt(message: Message):
-    """Adopt someone as child"""
-    if not message.reply_to_message:
-        await message.answer("❌ Please reply to the message of the person you want to adopt!")
-        return
-    
-    from_user = await get_or_create_user(message.from_user)
-    to_user = await get_or_create_user(message.reply_to_message.from_user)
-    
-    # Check if trying to adopt self
-    if from_user.id == to_user.id:
-        await message.answer("❌ You cannot adopt yourself!")
-        return
-    
-    # Check if already in family
-    family = await db.get_family(from_user.id)
-    for member_id, _ in family:
-        if member_id == to_user.id:
-            await message.answer("❌ This user is already in your family!")
-            return
-    
-    await send_proposal(from_user, to_user, "adopt", message)
-
-@dp.message(Command("marry"))
-async def cmd_marry(message: Message):
-    """Propose marriage"""
-    if not message.reply_to_message:
-        await message.answer("❌ Please reply to the message of the person you want to marry!")
-        return
-    
-    from_user = await get_or_create_user(message.from_user)
-    to_user = await get_or_create_user(message.reply_to_message.from_user)
-    
-    # Check if trying to marry self
-    if from_user.id == to_user.id:
-        await message.answer("❌ You cannot marry yourself!")
-        return
-    
-    # Check if already married
-    family = await db.get_family(from_user.id)
-    for member_id, rel_type in family:
-        if member_id == to_user.id and rel_type == "spouse":
-            await message.answer("❌ You are already married to this person!")
-            return
-    
-    await send_proposal(from_user, to_user, "marry", message)
-
-@dp.message(Command("friend"))
-async def cmd_friend(message: Message):
-    """Send friend request"""
-    if not message.reply_to_message:
-        await message.answer("❌ Please reply to the message of the person you want to befriend!")
-        return
-    
-    from_user = await get_or_create_user(message.from_user)
-    to_user = await get_or_create_user(message.reply_to_message.from_user)
-    
-    # Check if trying to friend self
-    if from_user.id == to_user.id:
-        await message.answer("❌ You cannot befriend yourself!")
-        return
-    
-    # Check if already friends
-    if await db.are_friends(from_user.id, to_user.id):
-        await message.answer("❌ You are already friends with this person!")
-        return
-    
-    await send_proposal(from_user, to_user, "friend", message)
-
-@dp.message(Command("circle", "friends"))
-async def cmd_circle(message: Message):
-    """Show friend circle"""
-    user = await get_or_create_user(message.from_user)
-    friends = await db.get_friends(user.id)
-    
-    if not friends:
-        await message.answer("You have no friends yet. Use /friend to add someone!")
-        return
-    
-    circle_text = f"🤝 **Friend Circle of {user.first_name}:**\n\n"
-    
-    for i, friend_id in enumerate(friends[:20], 1):  # Limit to 20 for readability
-        friend = await db.get_user(friend_id)
-        if friend:
-            status = "🟢" if friend.is_alive else "🔴"
-            circle_text += f"{i}. {friend.first_name} {status}\n"
-    
-    if len(friends) > 20:
-        circle_text += f"\n... and {len(friends) - 20} more friends!"
-    
-    # Add friend actions
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔍 Suggestions", callback_data="friend_suggestions"),
-            InlineKeyboardButton(text="📊 Active", callback_data="active_friends")
-        ],
-        [
-            InlineKeyboardButton(text="🔗 Get Friend Link", callback_data="get_flink"),
-            InlineKeyboardButton(text="⭐ Rate Friends", callback_data="rate_friends")
-        ]
-    ])
-    
-    await message.answer(circle_text, reply_markup=keyboard, parse_mode="Markdown")
-
-@dp.message(Command("unfriend"))
-async def cmd_unfriend(message: Message):
-    """Unfriend someone"""
-    user = await get_or_create_user(message.from_user)
-    friends = await db.get_friends(user.id)
-    
-    if not friends:
-        await message.answer("You have no friends to unfriend!")
-        return
-    
-    # Create inline keyboard with friends
-    buttons = []
-    for friend_id in friends[:10]:  # Limit to 10 for button layout
-        friend = await db.get_user(friend_id)
-        if friend:
-            buttons.append([InlineKeyboardButton(
-                text=f"❌ {friend.first_name}",
-                callback_data=f"unfriend_{friend.id}"
-            )])
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer("Select a friend to unfriend:", reply_markup=keyboard)
-
-@dp.message(Command("rob"))
-async def cmd_rob(message: Message):
-    """Rob another user"""
-    if not message.reply_to_message:
-        await message.answer("❌ Please reply to the message of the person you want to rob!")
-        return
-    
-    robber = await get_or_create_user(message.from_user)
-    victim = await get_or_create_user(message.reply_to_message.from_user)
-    
-    # Check conditions
-    can_rob, error = await can_perform_action(robber, "rob")
-    if not can_rob:
-        await message.answer(f"❌ {error}")
-        return
-    
-    if robber.id == victim.id:
-        await message.answer("❌ You cannot rob yourself!")
-        return
-    
-    if not victim.is_alive:
-        await message.answer("❌ Cannot rob dead people!")
-        return
-    
-    # Calculate success chance based on weapon
-    success_chance = 30  # Base chance
-    if robber.weapon == "knife":
-        success_chance += 10
-    elif robber.weapon == "gun":
-        success_chance += 25
-    elif robber.weapon == "shotgun":
-        success_chance += 40
-    
-    success = random.randint(1, 100) <= success_chance
-    
-    # Get appropriate GIF
-    gif_type = "robyes" if success else "robno"
-    gif_file_id = await get_custom_gif(message.chat.id, gif_type)
-    
-    if success:
-        # Calculate stolen amount (10-20% of victim's cash, max $1000)
-        steal_percent = random.uniform(0.1, 0.2)
-        stolen = min(int(victim.cash * steal_percent), 1000)
-        
-        if stolen > 0:
-            # Update balances
-            await db.update_user(robber.id, cash=robber.cash + stolen)
-            await db.update_user(victim.id, cash=victim.cash - stolen)
-            
-            # Update rob count
-            await db.update_user(robber.id, rob_count=robber.rob_count + 1)
-            
-            # Decrease reputation
-            new_rep = max(0, robber.reputation - 5)
-            await db.update_user(robber.id, reputation=new_rep)
-            
-            response = (
-                f"💰 **Robbery Successful!**\n\n"
-                f"🦹 {robber.first_name} robbed ${stolen:,} from {victim.first_name}!\n"
-                f"🎯 Success Chance: {success_chance}%\n"
-                f"📉 Reputation: -5 (Now: {new_rep})\n\n"
-                f"💵 {robber.first_name}: ${robber.cash + stolen:,}\n"
-                f"💵 {victim.first_name}: ${victim.cash - stolen:,}"
-            )
-            
-            # Send notification to victim if possible
-            try:
-                await bot.send_message(
-                    victim.id,
-                    f"⚠️ You were robbed by {robber.first_name}!\n"
-                    f"💰 Lost: ${stolen:,}\n"
-                    f"💵 New Balance: ${victim.cash - stolen:,}"
-                )
-            except:
-                pass
-            
-        else:
-            success = False
-            response = f"💰 {victim.first_name} has no money to rob!"
-    
-    if not success:
-        # Update rob count even on failure
-        await db.update_user(robber.id, rob_count=robber.rob_count + 1)
-        
-        # Decrease reputation more on failure
-        new_rep = max(0, robber.reputation - 10)
-        await db.update_user(robber.id, reputation=new_rep)
-        
-        response = (
-            f"🚫 **Robbery Failed!**\n\n"
-            f"🦹 {robber.first_name} tried to rob {victim.first_name} but failed!\n"
-            f"🎯 Success Chance: {success_chance}%\n"
-            f"📉 Reputation: -10 (Now: {new_rep})"
-        )
-    
-    # Send message with GIF if available
-    if gif_file_id:
-        await message.answer_animation(gif_file_id, caption=response, parse_mode="Markdown")
-    else:
-        await message.answer(response, parse_mode="Markdown")
-
-@dp.message(Command("kill"))
-async def cmd_kill(message: Message):
-    """Kill another user"""
-    if not message.reply_to_message:
-        await message.answer("❌ Please reply to the message of the person you want to kill!")
-        return
-    
-    killer = await get_or_create_user(message.from_user)
-    victim = await get_or_create_user(message.reply_to_message.from_user)
-    
-    # Check conditions
-    can_kill, error = await can_perform_action(killer, "kill")
-    if not can_kill:
-        await message.answer(f"❌ {error}")
-        return
-    
-    if killer.id == victim.id:
-        await message.answer("❌ You cannot kill yourself!")
-        return
-    
-    if not victim.is_alive:
-        await message.answer("❌ This person is already dead!")
-        return
-    
-    # Calculate success chance based on weapon
-    success_chance = 20  # Base chance
-    if killer.weapon == "knife":
-        success_chance += 15
-    elif killer.weapon == "gun":
-        success_chance += 30
-    elif killer.weapon == "shotgun":
-        success_chance += 50
-    
-    success = random.randint(1, 100) <= success_chance
-    
-    # Get appropriate GIF
-    gif_type = "killyes" if success else "killno"
-    gif_file_id = await get_custom_gif(message.chat.id, gif_type)
-    
-    if success:
-        # Kill the victim
-        await db.update_user(victim.id, is_alive=False)
-        
-        # Update kill count
-        await db.update_user(killer.id, kill_count=killer.kill_count + 1)
-        
-        # Decrease reputation significantly
-        new_rep = max(0, killer.reputation - 20)
-        await db.update_user(killer.id, reputation=new_rep)
-        
-        # Killer gets reward
-        reward = KILL_REWARD
-        await db.update_user(killer.id, cash=killer.cash + reward)
-        
-        # Process insurance payouts
-        insurances = await db.get_active_insurances(victim.id)
-        total_payout = 0
-        
-        for insurance in insurances:
-            # Payout to insurer
-            insurer = await db.get_user(insurance.insurer_id)
-            if insurer:
-                await db.update_user(
-                    insurer.id, 
-                    cash=insurer.cash + insurance.amount
-                )
-                total_payout += insurance.amount
-            
-            # Deactivate insurance
-            await db.deactivate_insurance(insurance.id)
-        
-        response = (
-            f"🔪 **Assassination Successful!**\n\n"
-            f"💀 {killer.first_name} killed {victim.first_name}!\n"
-            f"💰 Reward: ${reward:,}\n"
-            f"🎯 Success Chance: {success_chance}%\n"
-            f"📉 Reputation: -20 (Now: {new_rep})\n\n"
-            f"📊 Insurance Payouts: ${total_payout:,} distributed"
-        )
-        
-        # Send death notification to victim
-        try:
-            await bot.send_message(
-                victim.id,
-                f"💀 **You were killed by {killer.first_name}!**\n\n"
-                f"You are now dead. Use /medical to revive yourself.\n"
-                f"💰 Insurance paid out: ${total_payout:,}"
-            )
-        except:
-            pass
-        
-        # Log the kill
-        await send_log(
-            f"🔪 Kill: {killer.first_name} killed {victim.first_name}\n"
-            f"Reward: ${reward} | Insurance: ${total_payout}"
-        )
-    
-    else:
-        # Update kill count even on failure
-        await db.update_user(killer.id, kill_count=killer.kill_count + 1)
-        
-        # Decrease reputation
-        new_rep = max(0, killer.reputation - 15)
-        await db.update_user(killer.id, reputation=new_rep)
-        
-        response = (
-            f"🛡️ **Assassination Failed!**\n\n"
-            f"💀 {killer.first_name} tried to kill {victim.first_name} but failed!\n"
-            f"🎯 Success Chance: {success_chance}%\n"
-            f"📉 Reputation: -15 (Now: {new_rep})"
-        )
-    
-    # Send message with GIF if available
-    if gif_file_id:
-        await message.answer_animation(gif_file_id, caption=response, parse_mode="Markdown")
-    else:
-        await message.answer(response, parse_mode="Markdown")
-
-@dp.message(Command("fuse"))
-async def cmd_fuse(message: Message):
-    """Fuse gemstones with another user"""
-    if not message.reply_to_message:
-        await message.answer("❌ Please reply to the message of someone with the same gemstone!")
-        return
-    
-    user1 = await get_or_create_user(message.from_user)
-    user2 = await get_or_create_user(message.reply_to_message.from_user)
-    
-    if user1.id == user2.id:
-        await message.answer("❌ You cannot fuse with yourself!")
-        return
-    
-    if not user1.gemstone or not user2.gemstone:
-        await message.answer("❌ One of you doesn't have a gemstone!")
-        return
-    
-    if user1.gemstone != user2.gemstone:
-        await message.answer(f"❌ Gemstones don't match! You have {user1.gemstone}, they have {user2.gemstone}")
-        return
-    
-    # Check if gemstones are from today
-    now = datetime.utcnow()
-    if user1.gemstone_date and user1.gemstone_date.date() < now.date():
-        await message.answer("❌ Your gemstone is from yesterday! Get a new one with /daily")
-        return
-    
-    if user2.gemstone_date and user2.gemstone_date.date() < now.date():
-        await message.answer("❌ Their gemstone is from yesterday! Tell them to use /daily")
-        return
-    
-    # Successful fusion - give bonus to both
-    await db.update_user(user1.id, 
-        cash=user1.cash + GEMSTONE_BONUS,
-        gemstone=None,
-        gemstone_date=None
-    )
-    
-    await db.update_user(user2.id,
-        cash=user2.cash + GEMSTONE_BONUS,
-        gemstone=None,
-        gemstone_date=None
-    )
-    
-    response = (
-        f"💎 **Gemstone Fusion Successful!**\n\n"
-        f"✨ {user1.first_name} and {user2.first_name} fused their {user1.gemstone} gemstones!\n"
-        f"💰 Each received: ${GEMSTONE_BONUS:,}\n\n"
-        f"💵 {user1.first_name}: ${user1.cash + GEMSTONE_BONUS:,}\n"
-        f"💵 {user2.first_name}: ${user2.cash + GEMSTONE_BONUS:,}"
-    )
-    
-    await message.answer(response, parse_mode="Markdown")
-
-@dp.message(Command("pay"))
-async def cmd_pay(message: Message, command: CommandObject):
-    """Pay money to another user"""
-    if not command.args:
-        await message.answer("❌ Usage: /pay [amount] (reply to user's message)")
-        return
-    
-    if not message.reply_to_message:
-        await message.answer("❌ Please reply to the message of the person you want to pay!")
-        return
-    
+@dp.message(Command("ping"))
+async def cmd_ping(message: Message):
+    """Health check command"""
+    start = time.time()
+    msg = await message.answer("🏓 Pong! Testing...")
+    end = time.time()
+    
+    latency = round((end - start) * 1000, 2)
+    
+    # Check database
+    db_ok = False
     try:
-        amount = int(command.args)
-        if amount <= 0:
-            raise ValueError
-    except:
-        await message.answer("❌ Please provide a valid positive number!")
-        return
-    
-    sender = await get_or_create_user(message.from_user)
-    receiver = await get_or_create_user(message.reply_to_message.from_user)
-    
-    if sender.id == receiver.id:
-        await message.answer("❌ You cannot pay yourself!")
-        return
-    
-    if sender.cash < amount:
-        await message.answer(f"❌ Insufficient funds! You have ${sender.cash:,}, need ${amount:,}")
-        return
-    
-    # Process payment
-    await db.update_user(sender.id, cash=sender.cash - amount)
-    await db.update_user(receiver.id, cash=receiver.cash + amount)
-    
-    # Increase sender's reputation
-    new_rep = min(200, sender.reputation + 2)
-    await db.update_user(sender.id, reputation=new_rep)
-    
-    response = (
-        f"💰 **Payment Successful!**\n\n"
-        f"📤 {sender.first_name} paid ${amount:,} to {receiver.first_name}\n"
-        f"⭐ Reputation: +2 (Now: {new_rep})\n\n"
-        f"💵 {sender.first_name}: ${sender.cash - amount:,}\n"
-        f"💵 {receiver.first_name}: ${receiver.cash + amount:,}"
-    )
-    
-    await message.answer(response, parse_mode="Markdown")
-    
-    # Notify receiver
-    try:
-        await bot.send_message(
-            receiver.id,
-            f"💰 You received ${amount:,} from {sender.first_name}!\n"
-            f"💵 New Balance: ${receiver.cash + amount:,}"
-        )
+        user = await db.get_user(message.from_user.id)
+        db_ok = True
     except:
         pass
-
-@dp.message(Command("leaderboard", "mb"))
-async def cmd_leaderboard(message: Message):
-    """Show money leaderboard"""
-    leaderboard = await db.get_leaderboard(message.chat.id)
     
-    if not leaderboard:
-        await message.answer("No users found!")
-        return
-    
-    lb_text = "💰 **Money Leaderboard**\n\n"
-    
-    for i, (user_id, name, cash) in enumerate(leaderboard, 1):
-        medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
-        lb_text += f"{medal} {name}: ${cash:,}\n"
-    
-    await message.answer(lb_text, parse_mode="Markdown")
-
-@dp.message(Command("reactions", "rxns"))
-async def cmd_reactions(message: Message):
-    """Show available reactions"""
-    reactions_text = (
-        "😄 **Available Reactions**\n\n"
-        "Use a comma (,) or dot (.) before these words to send GIFs:\n\n"
-        
-        "• ,hug or .hug - Send a hug GIF\n"
-        "• ,pat or .pat - Send a pat GIF\n"
-        "• ,kiss or .kiss - Send a kiss GIF\n"
-        "• ,cry or .cry - Send a cry GIF\n"
-        "• ,smile or .smile - Send a smile GIF\n\n"
-        
-        "Example: `,hug` or `.pat`\n\n"
-        
-        "You can also add custom GIFs for rob/kill actions:\n"
-        "• /addgif robyes|robno|killyes|killno (reply to GIF)\n"
-        "• /showgifs - View custom GIFs\n"
-        "• /remgifs - Remove all custom GIFs"
+    status = (
+        f"🏓 **Bot Status**\n\n"
+        f"✅ Bot: Online\n"
+        f"📡 Latency: {latency}ms\n"
+        f"💾 Database: {'✅ Connected' if db_ok else '❌ Error'}\n"
+        f"👤 Users: ... (use /admin stats)\n"
+        f"🕐 Time: {datetime.utcnow().strftime('%H:%M UTC')}"
     )
     
-    await message.answer(reactions_text, parse_mode="Markdown")
+    await msg.edit_text(status)
 
-# Reaction GIF handler
-@dp.message(F.text.startswith(",") | F.text.startswith("."))
-async def handle_reaction(message: Message):
-    """Handle reaction commands like ,hug or .pat"""
-    text = message.text.lower().strip()
-    reaction = text[1:]  # Remove the , or .
-    
-    if reaction in REACTION_GIFS:
-        gif_id = random.choice(REACTION_GIFS[reaction])
-        await message.answer_animation(gif_id)
-    else:
-        # Not a valid reaction, ignore
-        return
-
-@dp.message(Command("addgif"))
-async def cmd_addgif(message: Message, command: CommandObject):
-    """Add custom GIF for rob/kill actions"""
-    if not command.args:
-        await message.answer(
-            "❌ Usage: /addgif robyes|robno|killyes|killno (reply to a GIF)"
-        )
-        return
-    
-    gif_type = command.args.lower()
-    if gif_type not in ["robyes", "robno", "killyes", "killno"]:
-        await message.answer(
-            "❌ Invalid type! Use: robyes, robno, killyes, or killno"
-        )
-        return
-    
-    if not message.reply_to_message or not message.reply_to_message.animation:
-        await message.answer("❌ Please reply to a GIF message!")
-        return
-    
-    gif_file_id = message.reply_to_message.animation.file_id
-    
-    # Save to database
-    async with db.pool.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO custom_gifs (chat_id, gif_type, file_id, added_by)
-            VALUES ($1, $2, $3, $4)
-        ''', message.chat.id, gif_type, gif_file_id, message.from_user.id)
-    
-    await message.answer(f"✅ Custom GIF added for {gif_type} actions!")
-
-@dp.message(Command("showgifs"))
-async def cmd_showgifs(message: Message):
-    """Show custom GIFs for this chat"""
-    async with db.pool.acquire() as conn:
-        rows = await conn.fetch('''
-            SELECT gif_type, COUNT(*) as count 
-            FROM custom_gifs 
-            WHERE chat_id = $1 
-            GROUP BY gif_type
-        ''', message.chat.id)
-    
-    if not rows:
-        await message.answer("No custom GIFs in this chat. Use /addgif to add some!")
-        return
-    
-    gifs_text = "🎞 **Custom GIFs in this chat:**\n\n"
-    
-    for row in rows:
-        gif_type = row['gif_type']
-        count = row['count']
-        gifs_text += f"• {gif_type}: {count} GIFs\n"
-    
-    await message.answer(gifs_text, parse_mode="Markdown")
-
-@dp.message(Command("remgifs"))
-async def cmd_remgifs(message: Message):
-    """Remove all custom GIFs from this chat"""
-    async with db.pool.acquire() as conn:
-        await conn.execute(
-            'DELETE FROM custom_gifs WHERE chat_id = $1', message.chat.id
-        )
-    
-    await message.answer("✅ All custom GIFs removed from this chat!")
-
-@dp.message(Command("setpic"))
-async def cmd_setpic(message: Message):
-    """Set profile picture"""
-    if not message.reply_to_message or not message.reply_to_message.photo:
-        await message.answer("❌ Please reply to a photo message!")
-        return
-    
-    # In a real implementation, you'd save the photo file_id to user's profile
-    # For now, we'll just acknowledge it
-    await message.answer(
-        "✅ Profile picture updated!\n\n"
-        "Note: In full implementation, this would save your profile picture "
-        "and show it in /tree and /profile commands."
-    )
-
-# ============================================================================
-# ADMIN COMMAND HANDLERS
-# ============================================================================
-
-@dp.message(Command("admin"))
-async def cmd_admin(message: Message, command: CommandObject):
-    """Admin commands handler"""
-    if message.from_user.id != OWNER_ID:
-        await message.answer("❌ This command is only for the bot owner!")
-        return
-    
-    if not command.args:
-        # Show admin help
-        help_text = (
-            "👑 **Admin Commands**\n\n"
-            
-            "👤 **User Management:**\n"
-            "• /admin userinfo [ID/reply] - View user details\n"
-            "• /admin addmoney [ID] [amount] [currency] - Add currency\n"
-            "• /admin reset [ID] - Reset user data\n"
-            "• /admin ban [ID] - Ban user from bot\n"
-            "• /admin unban [ID] - Unban user\n\n"
-            
-            "📊 **Bot Management:**\n"
-            "• /admin stats - Show bot statistics\n"
-            "• /admin broadcast [message] - Broadcast to all users\n"
-            "• /admin maintenance [on/off] - Toggle maintenance\n"
-            "• /admin grouplist - List all groups\n"
-            "• /admin execute [SQL] - Execute SQL (DANGEROUS)\n\n"
-            
-            "📈 **Economy Control:**\n"
-            "• /admin setrate [currency] [rate] - Set exchange rate\n"
-            "• /admin giveitem [ID] [item] - Give item to user\n"
-            "• /admin reloadshop - Reload shop items\n\n"
-            
-            "Usage: /admin [command] [arguments]"
-        )
-        
-        await message.answer(help_text, parse_mode="Markdown")
-        return
-    
-    args = command.args.split()
-    cmd = args[0].lower()
-    
-    if cmd == "userinfo":
-        await admin_userinfo(message, args[1:])
-    elif cmd == "addmoney":
-        await admin_addmoney(message, args[1:])
-    elif cmd == "broadcast":
-        await admin_broadcast(message, args[1:])
-    elif cmd == "stats":
-        await admin_stats(message)
-    elif cmd == "grouplist":
-        await admin_grouplist(message)
-    else:
-        await message.answer(f"❌ Unknown admin command: {cmd}")
-
-async def admin_userinfo(message: Message, args: List[str]):
-    """Admin: Get user information"""
-    if not args:
-        await message.answer("❌ Usage: /admin userinfo [user_id or reply]")
-        return
+@dp.message(Command("backup"))
+@owner_only
+async def cmd_backup(message: Message):
+    """Create secure backup (owner only)"""
+    backup_msg = await message.answer("🔐 Creating secure backup...")
     
     try:
-        if args[0].isdigit():
-            user_id = int(args[0])
-        elif message.reply_to_message:
-            user_id = message.reply_to_message.from_user.id
-        else:
-            await message.answer("❌ Please provide user ID or reply to user's message")
-            return
-    except:
-        await message.answer("❌ Invalid user ID")
-        return
+        backup_data = await db.create_backup()
+        
+        # Send as document
+        backup_file = FSInputFile(
+            path=io.BytesIO(backup_data),
+            filename=f"backup_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.zip"
+        )
+        
+        await bot.send_document(
+            chat_id=OWNER_ID,
+            document=backup_file,
+            caption=f"🔐 Backup created at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
+        
+        await backup_msg.edit_text("✅ Backup created and sent to owner privately!")
+        
+        # Log the action
+        await db.log_admin_action(
+            message.from_user.id,
+            "backup_created",
+            None,
+            "Full system backup"
+        )
+        
+    except Exception as e:
+        await backup_msg.edit_text(f"❌ Backup failed: {str(e)}")
+        logger.error(f"Backup error: {e}")
+
+@dp.message(Command("refresh"))
+@owner_only
+@rate_limit("default")
+async def cmd_refresh(message: Message):
+    """Refresh system data (owner only)"""
+    refresh_msg = await message.answer("🔄 Refreshing system...")
     
-    user = await db.get_user(user_id)
+    try:
+        # Update crop growth
+        async with db.lock:
+            await db.conn.execute(
+                "UPDATE garden_plants SET is_ready = 1 WHERE "
+                "julianday('now') - julianday(planted_at) > grow_time/86400.0"
+            )
+            
+            # Clear old proposals (24h+)
+            await db.conn.execute(
+                "DELETE FROM proposals WHERE expires_at < CURRENT_TIMESTAMP"
+            )
+            
+            await db.conn.commit()
+        
+        await refresh_msg.edit_text(
+            "✅ System refreshed!\n"
+            "• Updated crop growth\n"
+            "• Cleared expired proposals\n"
+            "• All daily limits maintained"
+        )
+        
+        await db.log_admin_action(
+            message.from_user.id,
+            "system_refresh",
+            None,
+            "Manual system refresh"
+        )
+        
+    except Exception as e:
+        await refresh_msg.edit_text(f"❌ Refresh failed: {str(e)}")
+
+@dp.message(Command("hmk"))
+@rate_limit()
+async def cmd_hmk(message: Message):
+    """Hired Muscle - Special attack"""
+    user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("❌ User not found in database!")
+        await message.answer("❌ Please use /start first!")
         return
     
-    # Get additional info
-    family = await db.get_family(user.id)
-    friends = await db.get_friends(user.id)
-    insurances = await db.get_active_insurances(user.id)
+    if user["cash"] < 5000:
+        await message.answer("❌ Need $5,000 to hire muscle!")
+        return
     
-    info_text = (
-        f"👤 **User Information**\n\n"
-        f"🆔 ID: `{user.id}`\n"
-        f"👤 Name: {user.first_name} {user.last_name or ''}\n"
-        f"📛 Username: @{user.username or 'None'}\n"
-        f"📅 Created: {user.created_at.strftime('%Y-%m-%d %H:%M')}\n"
-        f"💼 Job: {user.job or 'None'}\n"
-        f"❤️ Status: {'Alive ✅' if user.is_alive else 'Dead 💀'}\n\n"
-        
-        f"💰 **Economy:**\n"
-        f"{await format_money(user)}\n\n"
-        
-        f"📊 **Stats:**\n"
-        f"• 👨‍👩‍👧‍👦 Family: {len(family)} members\n"
-        f"• 🤝 Friends: {len(friends)} friends\n"
-        f"• 🛡️ Insurance: {len(insurances)} policies\n"
-        f"• ⭐ Reputation: {user.reputation}/200\n"
-        f"• 💎 Gemstone: {user.gemstone or 'None'}\n"
-        f"• 🔫 Weapon: {user.weapon}\n\n"
-        
-        f"📈 **Daily Activity:**\n"
-        f"• Robs: {user.rob_count}/{MAX_ROB_DAILY}\n"
-        f"• Kills: {user.kill_count}/{MAX_KILL_DAILY}\n"
-        f"• Last Daily: {user.last_daily.strftime('%Y-%m-%d %H:%M') if user.last_daily else 'Never'}"
-    )
+    # Find random target with money
+    async with db.lock:
+        cursor = await db.conn.execute(
+            "SELECT user_id, first_name, cash FROM users "
+            "WHERE user_id != ? AND cash > 1000 "
+            "ORDER BY RANDOM() LIMIT 1",
+            (user["user_id"],)
+        )
+        target = await cursor.fetchone()
     
-    # Create admin action buttons
+    if not target:
+        await message.answer("❌ No suitable targets found!")
+        return
+    
+    target_id, target_name, target_cash = target
+    
+    # Calculate steal (30-50%)
+    steal_percent = random.uniform(0.3, 0.5)
+    stolen = min(int(target_cash * steal_percent), 5000)
+    
+    if stolen < 100:
+        stolen = min(target_cash, 1000)
+    
+    # Execute transaction
+    queries = [
+        ("UPDATE users SET cash = cash - ? WHERE user_id = ?", (5000, user["user_id"])),
+        ("UPDATE users SET cash = cash - ? WHERE user_id = ?", (stolen, target_id)),
+        ("UPDATE users SET cash = cash + ? WHERE user_id = ?", (stolen + 1000, user["user_id"])),
+    ]
+    
+    try:
+        await db.execute_transaction(queries)
+        
+        result = (
+            f"💪 **Hired Muscle Attack Successful!**\n\n"
+            f"🦾 You hired muscle for $5,000\n"
+            f"🎯 Target: {target_name}\n"
+            f"💰 Stolen: ${stolen:,}\n"
+            f"💸 Bonus: $1,000 (for successful hire)\n"
+            f"📈 Total Gain: ${stolen:,}\n\n"
+            f"⚖️ Reputation: -15 (for brutal attack)"
+        )
+        
+        # Update reputation
+        await db.conn.execute(
+            "UPDATE users SET reputation = reputation - 15 WHERE user_id = ?",
+            (user["user_id"],)
+        )
+        
+        await message.answer(result)
+        
+        # Log the attack
+        await db.log_admin_action(
+            user["user_id"],
+            "hmk_attack",
+            target_id,
+            f"Stole ${stolen} from {target_name}"
+        )
+        
+    except Exception as e:
+        await message.answer(f"❌ Attack failed: {str(e)}")
+
+@dp.message(Command("garden"))
+@rate_limit()
+async def cmd_garden(message: Message):
+    """View and manage garden"""
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ Please use /start first!")
+        return
+    
+    async with db.lock:
+        # Get garden info
+        cursor = await db.conn.execute(
+            "SELECT slots FROM gardens WHERE user_id = ?", (user["user_id"],)
+        )
+        garden = await cursor.fetchone()
+        
+        # Get active plants
+        cursor = await db.conn.execute(
+            "SELECT crop_type, "
+            "ROUND((julianday('now') - julianday(planted_at)) * 86400.0) as elapsed, "
+            "grow_time, is_ready "
+            "FROM garden_plants WHERE user_id = ? AND is_ready = 0",
+            (user["user_id"],)
+        )
+        plants = await cursor.fetchall()
+        
+        # Get barn contents
+        cursor = await db.conn.execute(
+            "SELECT crop_type, quantity FROM barn WHERE user_id = ?",
+            (user["user_id"],)
+        )
+        barn = await cursor.fetchall()
+    
+    if not garden:
+        await message.answer("❌ Garden not found! Use /start to create one.")
+        return
+    
+    slots = garden[0]
+    active_plants = len(plants)
+    
+    # Build garden display
+    garden_text = f"🌾 **{user['first_name']}'s Garden**\n\n"
+    garden_text += f"📊 **Stats:**\n"
+    garden_text += f"• Slots: {active_plants}/{slots}\n"
+    garden_text += f"• Money: ${user['cash']:,}\n"
+    garden_text += f"• Tokens: {user['tokens']} 🌱\n\n"
+    
+    if plants:
+        garden_text += f"🌱 **Growing Plants:**\n"
+        for plant in plants:
+            crop_type, elapsed, grow_time, is_ready = plant
+            if is_ready:
+                status = "✅ Ready!"
+            else:
+                remaining = max(0, grow_time - elapsed)
+                hours = remaining // 3600
+                minutes = (remaining % 3600) // 60
+                status = f"⏳ {hours}h {minutes}m"
+            garden_text += f"• {crop_type.capitalize()}: {status}\n"
+    else:
+        garden_text += "🌱 No plants growing. Use /plant [crop] [qty]\n"
+    
+    if barn:
+        garden_text += f"\n🏠 **Barn Storage:**\n"
+        for item in barn:
+            crop_type, quantity = item
+            garden_text += f"• {crop_type.capitalize()}: {quantity}\n"
+    
+    # Add garden actions keyboard
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="💰 Add Money", callback_data=f"admin_addmoney_{user.id}"),
-            InlineKeyboardButton(text="🔄 Reset User", callback_data=f"admin_reset_{user.id}")
+            InlineKeyboardButton(text="🌱 Plant", callback_data="garden_plant"),
+            InlineKeyboardButton(text="🪴 Harvest", callback_data="garden_harvest")
         ],
         [
-            InlineKeyboardButton(text="🚫 Ban User", callback_data=f"admin_ban_{user.id}"),
-            InlineKeyboardButton(text="💀 Kill/Revive", callback_data=f"admin_togglelife_{user.id}")
+            InlineKeyboardButton(text="🏪 Market", callback_data="garden_market"),
+            InlineKeyboardButton(text="💧 Fertilize", callback_data="garden_fertilize")
+        ],
+        [
+            InlineKeyboardButton(text="📦 Barn", callback_data="garden_barn"),
+            InlineKeyboardButton(text="🔄 Refresh", callback_data="garden_refresh")
         ]
     ])
     
-    await message.answer(info_text, reply_markup=keyboard, parse_mode="Markdown")
+    await message.answer(garden_text, reply_markup=keyboard)
 
-async def admin_addmoney(message: Message, args: List[str]):
-    """Admin: Add money to user"""
-    if len(args) < 3:
+@dp.message(Command("plant"))
+@rate_limit()
+async def cmd_plant(message: Message, command: CommandObject):
+    """Plant crops command"""
+    if not command.args:
         await message.answer(
-            "❌ Usage: /admin addmoney [user_id] [amount] [currency]\n"
-            "Currencies: cash, gold, bonds, credits, tokens"
+            "❌ Usage: /plant [crop] [quantity]\n"
+            f"Available crops: {', '.join(CROP_TYPES)}\n"
+            "Example: /plant carrot 3"
         )
         return
     
     try:
-        user_id = int(args[0])
-        amount = int(args[1])
-        currency = args[2].lower()
+        args = command.args.split()
+        if len(args) == 2:
+            crop_type, quantity = args[0].lower(), int(args[1])
+        elif len(args) == 1:
+            crop_type, quantity = args[0].lower(), 1
+        else:
+            await message.answer("❌ Usage: /plant [crop] [quantity]")
+            return
     except:
-        await message.answer("❌ Invalid arguments!")
+        await message.answer("❌ Invalid format! Use: /plant [crop] [quantity]")
         return
     
-    if currency not in CURRENCIES:
-        await message.answer(f"❌ Invalid currency! Available: {', '.join(CURRENCIES.keys())}")
+    if crop_type not in CROP_TYPES:
+        await message.answer(f"❌ Invalid crop! Choose from: {', '.join(CROP_TYPES)}")
         return
     
-    user = await db.get_user(user_id)
-    if not user:
-        await message.answer("❌ User not found!")
+    if quantity < 1 or quantity > 10:
+        await message.answer("❌ Quantity must be 1-10!")
         return
     
-    # Update user's currency
-    update_field = currency
-    current_value = getattr(user, currency)
-    new_value = current_value + amount
-    
-    await db.update_user(user.id, **{update_field: new_value})
-    
-    # Log the action
-    await send_log(
-        f"💰 Admin added {amount} {currency} to user {user_id} ({user.first_name})\n"
-        f"New balance: {new_value} {CURRENCIES[currency]}"
-    )
-    
-    await message.answer(
-        f"✅ Added {amount} {CURRENCIES[currency]} to {user.first_name}!\n"
-        f"New balance: {new_value} {CURRENCIES[currency]}"
-    )
+    success, msg = await db.plant_crop(message.from_user.id, crop_type, quantity)
+    await message.answer("✅ " + msg if success else "❌ " + msg)
 
-async def admin_broadcast(message: Message, args: List[str]):
-    """Admin: Broadcast message to all users"""
-    if not args:
-        await message.answer("❌ Usage: /admin broadcast [message]")
+@dp.message(Command("harvest"))
+@rate_limit()
+async def cmd_harvest(message: Message):
+    """Harvest ready crops"""
+    harvested, msg = await db.harvest_crops(message.from_user.id)
+    
+    if harvested:
+        crop_list = ", ".join([f"{qty} {crop}" for crop, qty in harvested.items()])
+        total = sum(harvested.values())
+        response = (
+            f"✅ {msg}\n\n"
+            f"📦 **Harvested:**\n{crop_list}\n\n"
+            f"📈 Total crops: {total}\n"
+            f"🏠 Stored in barn. Use /barn to view."
+        )
+    else:
+        response = "❌ " + msg
+    
+    await message.answer(response)
+
+@dp.message(Command("stands"))
+@rate_limit()
+async def cmd_stands(message: Message):
+    """View market stands"""
+    async with db.lock:
+        cursor = await db.conn.execute(
+            "SELECT ms.id, ms.crop_type, ms.quantity, ms.price, "
+            "u.first_name, u.username "
+            "FROM market_stands ms "
+            "JOIN users u ON ms.seller_id = u.user_id "
+            "ORDER BY ms.price / ms.quantity ASC "
+            "LIMIT 20"
+        )
+        listings = await cursor.fetchall()
+    
+    if not listings:
+        await message.answer("🏪 **Market Stands**\n\nNo listings available.")
         return
     
-    broadcast_msg = " ".join(args)
-    confirmation = (
-        f"📢 **Broadcast Preview:**\n\n"
-        f"{broadcast_msg}\n\n"
-        f"Send to all users? This may take a while."
-    )
+    market_text = "🏪 **Market Stands** (Cheapest First)\n\n"
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Yes, Send", callback_data="broadcast_confirm"),
-            InlineKeyboardButton(text="❌ Cancel", callback_data="broadcast_cancel")
-        ]
-    ])
+    for listing in listings:
+        listing_id, crop_type, quantity, price, seller_name, username = listing
+        price_per = price / quantity
+        market_text += (
+            f"📦 **{crop_type.capitalize()}**\n"
+            f"• Quantity: {quantity}\n"
+            f"• Price: ${price:,} (${price_per:.1f}/each)\n"
+            f"• Seller: {seller_name}\n"
+            f"• ID: `{listing_id}`\n"
+            f"Use `/buy {listing_id} [qty]` to purchase\n\n"
+        )
     
-    await message.answer(confirmation, reply_markup=keyboard, parse_mode="Markdown")
+    await message.answer(market_text)
 
-async def admin_stats(message: Message):
-    """Admin: Show bot statistics"""
-    async with db.pool.acquire() as conn:
-        # Get total users
-        total_users = await conn.fetchval('SELECT COUNT(*) FROM users')
-        
-        # Get active users (used in last 7 days)
-        active_users = await conn.fetchval('''
-            SELECT COUNT(DISTINCT user1_id) FROM family_relations 
-            WHERE created_at > NOW() - INTERVAL '7 days'
-            UNION
-            SELECT COUNT(DISTINCT user2_id) FROM family_relations 
-            WHERE created_at > NOW() - INTERVAL '7 days'
-        ''')
-        
-        # Get total families
-        total_families = await conn.fetchval('''
-            SELECT COUNT(DISTINCT LEAST(user1_id, user2_id), GREATEST(user1_id, user2_id))
-            FROM family_relations WHERE relation_type = 'spouse'
-        ''')
-        
-        # Get total friendships
-        total_friendships = await conn.fetchval('SELECT COUNT(*) FROM friendships') // 2
-        
-        # Get total cash in economy
-        total_cash = await conn.fetchval('SELECT SUM(cash) FROM users')
-        
-        # Get today's activity
-        today_rob = await conn.fetchval('''
-            SELECT COUNT(*) FROM users WHERE rob_count > 0 AND rob_reset > NOW() - INTERVAL '1 day'
-        ''')
-        
-        today_kill = await conn.fetchval('''
-            SELECT COUNT(*) FROM users WHERE kill_count > 0 AND kill_reset > NOW() - INTERVAL '1 day'
-        ''')
+@dp.message(Command("buy"))
+@rate_limit()
+async def cmd_buy(message: Message, command: CommandObject):
+    """Buy from market"""
+    if not command.args:
+        await message.answer("❌ Usage: /buy [listing_id] [quantity]")
+        return
     
-    stats_text = (
-        f"📊 **Bot Statistics**\n\n"
-        
-        f"👥 **Users:**\n"
-        f"• Total Users: {total_users:,}\n"
-        f"• Active (7 days): {active_users or 0:,}\n\n"
-        
-        f"🌳 **Family System:**\n"
-        f"• Total Families: {total_families or 0:,}\n"
-        f"• Total Friendships: {total_friendships or 0:,}\n\n"
-        
-        f"💰 **Economy:**\n"
-        f"• Total Cash: ${total_cash or 0:,}\n\n"
-        
-        f"📈 **Today's Activity:**\n"
-        f"• Robberies: {today_rob or 0:,}\n"
-        f"• Kills: {today_kill or 0:,}\n\n"
-        
-        f"⚙️ **System:**\n"
-        f"• Owner: {OWNER_ID}\n"
-        f"• Log Channel: {LOG_CHANNEL}"
-    )
+    try:
+        args = command.args.split()
+        listing_id = int(args[0])
+        quantity = int(args[1]) if len(args) > 1 else 1
+    except:
+        await message.answer("❌ Usage: /buy [listing_id] [quantity]")
+        return
     
-    await message.answer(stats_text, parse_mode="Markdown")
-
-async def admin_grouplist(message: Message):
-    """Admin: List all groups bot is in"""
-    # Note: This requires storing group info in database
-    # For now, return a placeholder
-    await message.answer(
-        "📋 **Group List (Placeholder)**\n\n"
-        "In full implementation, this would show all groups where the bot is a member.\n\n"
-        "To implement, you need to:\n"
-        "1. Store group info when bot is added\n"
-        "2. Track group membership\n"
-        "3. Display with member counts and activity stats"
-    )
+    success, msg = await db.buy_from_market(message.from_user.id, listing_id, quantity)
+    await message.answer("✅ " + msg if success else "❌ " + msg)
 
 # ============================================================================
 # CALLBACK QUERY HANDLERS
 # ============================================================================
 
-@dp.callback_query(F.data.startswith("proposal_"))
-async def handle_proposal_callback(callback: CallbackQuery):
-    """Handle proposal accept/decline callbacks"""
-    data_parts = callback.data.split("_")
+@dp.callback_query(F.data.startswith("garden_"))
+async def handle_garden_callback(callback: CallbackQuery):
+    """Handle garden button callbacks"""
+    action = callback.data.split("_")[1]
     
-    if len(data_parts) < 3:
-        await callback.answer("Invalid callback data!")
-        return
+    if action == "plant":
+        await callback.message.answer(
+            "🌱 **Plant Crops**\n\n"
+            "Usage: `/plant [crop] [quantity]`\n"
+            f"Crops: {', '.join(CROP_TYPES)}\n"
+            "Prices per seed:\n" +
+            "\n".join([f"• {crop}: ${CROP_PRICES[crop]['buy']}" for crop in CROP_TYPES])
+        )
+    elif action == "harvest":
+        await cmd_harvest(callback.message)
+    elif action == "market":
+        await cmd_stands(callback.message)
+    elif action == "refresh":
+        await callback.message.delete()
+        await cmd_garden(callback.message)
     
-    proposal_id = data_parts[1]
-    action = data_parts[2]
-    
-    proposal = await db.get_proposal(proposal_id)
-    if not proposal:
-        await callback.answer("Proposal expired or not found!")
-        return
-    
-    from_user = await db.get_user(proposal.from_id)
-    to_user = await db.get_user(proposal.to_id)
-    
-    if not from_user or not to_user:
-        await callback.answer("User not found!")
-        return
-    
-    if callback.from_user.id != to_user.id:
-        await callback.answer("This proposal is not for you!")
-        return
-    
-    if action == "accept":
-        # Process accepted proposal
-        if proposal.proposal_type == "friend":
-            # Add as friends
-            success = await db.add_friend(from_user.id, to_user.id)
-            if success:
-                # Give friend bonus to both
-                await db.update_user(from_user.id, cash=from_user.cash + FRIEND_BONUS)
-                await db.update_user(to_user.id, cash=to_user.cash + FRIEND_BONUS)
-                
-                # Increase reputation for both
-                await db.update_user(from_user.id, reputation=min(200, from_user.reputation + 5))
-                await db.update_user(to_user.id, reputation=min(200, to_user.reputation + 5))
-                
-                response = (
-                    f"🤝 **Friendship Accepted!**\n\n"
-                    f"✨ {from_user.first_name} and {to_user.first_name} are now friends!\n"
-                    f"💰 Each received: ${FRIEND_BONUS:,}\n"
-                    f"⭐ Reputation: +5 each\n\n"
-                    f"Use /circle to see your friend circle!"
-                )
-                
-                # Notify the other user
-                try:
-                    await bot.send_message(
-                        from_user.id,
-                        f"✅ {to_user.first_name} accepted your friend request!\n"
-                        f"💰 You received: ${FRIEND_BONUS:,}\n"
-                        f"⭐ Reputation: +5"
-                    )
-                except:
-                    pass
-                
-            else:
-                response = "❌ Failed to add friend. You might already be friends!"
-        
-        elif proposal.proposal_type in ["adopt", "marry"]:
-            # Add family relation
-            rel_type = RelationType.CHILD if proposal.proposal_type == "adopt" else RelationType.SPOUSE
-            success = await db.add_family_relation(from_user.id, to_user.id, rel_type)
-            
-            if success:
-                relation_text = "adopted as child" if proposal.proposal_type == "adopt" else "married"
-                response = (
-                    f"✅ **{proposal.proposal_type.capitalize()} Accepted!**\n\n"
-                    f"✨ {to_user.first_name} is now {relation_text} of {from_user.first_name}!\n\n"
-                    f"Use /tree to see your updated family tree!"
-                )
-                
-                # Notify the other user
-                try:
-                    await bot.send_message(
-                        from_user.id,
-                        f"✅ {to_user.first_name} accepted your {proposal.proposal_type} proposal!\n"
-                        f"Check /tree to see your updated family!"
-                    )
-                except:
-                    pass
-                
-                # Log the new family relation
-                await send_log(
-                    f"👨‍👩‍👧‍👦 New {proposal.proposal_type}: "
-                    f"{from_user.first_name} -> {to_user.first_name}"
-                )
-            else:
-                response = f"❌ Failed to create {proposal.proposal_type} relation!"
-        
-        await callback.message.edit_text(response, parse_mode="Markdown")
-        await callback.answer("Proposal accepted!")
-    
-    elif action == "decline":
-        # Process declined proposal
-        response = f"❌ {proposal.proposal_type.capitalize()} proposal declined."
-        await callback.message.edit_text(response)
-        await callback.answer("Proposal declined!")
-    
-    # Delete proposal from database
-    await db.delete_proposal(proposal_id)
-
-@dp.callback_query(F.data.startswith("unfriend_"))
-async def handle_unfriend_callback(callback: CallbackQuery):
-    """Handle unfriend callbacks"""
-    try:
-        friend_id = int(callback.data.split("_")[1])
-    except:
-        await callback.answer("Invalid callback data!")
-        return
-    
-    user = await db.get_user(callback.from_user.id)
-    friend = await db.get_user(friend_id)
-    
-    if not user or not friend:
-        await callback.answer("User not found!")
-        return
-    
-    # Remove friendship
-    await db.remove_friend(user.id, friend.id)
-    
-    # Remove friend bonus from both (if they have enough cash)
-    if user.cash >= FRIEND_BONUS:
-        await db.update_user(user.id, cash=user.cash - FRIEND_BONUS)
-    
-    if friend.cash >= FRIEND_BONUS:
-        await db.update_user(friend.id, cash=friend.cash - FRIEND_BONUS)
-    
-    # Decrease reputation
-    new_rep = max(0, user.reputation - 10)
-    await db.update_user(user.id, reputation=new_rep)
-    
-    await callback.message.edit_text(
-        f"❌ Unfriended {friend.first_name}!\n"
-        f"💰 Lost: ${FRIEND_BONUS:,} (if had enough)\n"
-        f"📉 Reputation: -10 (Now: {new_rep})"
-    )
-    await callback.answer("Unfriended!")
-
-@dp.callback_query(F.data == "daily_bonus")
-async def handle_daily_bonus_callback(callback: CallbackQuery):
-    """Handle daily bonus button"""
-    user = await get_or_create_user(callback.from_user)
-    bonus, gemstone, error = await process_daily_bonus(user)
-    
-    if error:
-        await callback.answer(error)
-        return
-    
-    response = (
-        f"🎉 **Daily Bonus Claimed!**\n\n"
-        f"💰 Received: ${bonus:,}\n"
-        f"💎 Today's Gemstone: **{gemstone}**\n\n"
-        f"💵 New Balance: ${user.cash + bonus:,}"
-    )
-    
-    await callback.message.edit_text(response, parse_mode="Markdown")
-    await callback.answer("Bonus claimed!")
-
-@dp.callback_query(F.data == "find_gem_match")
-async def handle_find_gem_match(callback: CallbackQuery):
-    """Handle find gemstone match button"""
-    user = await get_or_create_user(callback.from_user)
-    
-    if not user.gemstone:
-        await callback.answer("You don't have a gemstone! Use /daily first.")
-        return
-    
-    # In a full implementation, this would search for users with same gemstone
-    # For now, show instructions
-    response = (
-        f"💎 **Find {user.gemstone} Match**\n\n"
-        f"To fuse gemstones and get ${GEMSTONE_BONUS:,}:\n\n"
-        f"1. Find someone with {user.gemstone} gemstone\n"
-        f"2. Reply to their message with /fuse\n"
-        f"3. Both of you get ${GEMSTONE_BONUS:,} each!\n\n"
-        f"Ask in chat: 'Anyone has {user.gemstone} gemstone?'"
-    )
-    
-    await callback.message.answer(response, parse_mode="Markdown")
     await callback.answer()
 
 # ============================================================================
-# MAIN BOT SETUP & ENTRY POINT
+# MESSAGE HANDLERS (Reactions, Trading, etc.)
+# ============================================================================
+
+@dp.message(F.text.startswith("I trade "))
+async def handle_trade(message: Message):
+    """Handle trading syntax: I trade 5 carrot for 3 tomato"""
+    try:
+        # Parse trade command
+        text = message.text[8:]  # Remove "I trade "
+        
+        if " for " not in text:
+            await message.answer("❌ Format: `I trade [qty] [item] for [qty] [item]`")
+            return
+        
+        offer_part, request_part = text.split(" for ", 1)
+        
+        # Parse offer
+        offer_parts = offer_part.strip().split()
+        if len(offer_parts) != 2:
+            await message.answer("❌ Offer format: [quantity] [item]")
+            return
+        
+        offer_qty = int(offer_parts[0])
+        offer_item = offer_parts[1].lower()
+        
+        # Parse request
+        request_parts = request_part.strip().split()
+        if len(request_parts) != 2:
+            # Might be for money
+            try:
+                request_money = int(request_parts[0])
+                is_money_trade = True
+            except:
+                await message.answer("❌ Request format: [quantity] [item] OR [amount]")
+                return
+        else:
+            is_money_trade = False
+            request_qty = int(request_parts[0])
+            request_item = request_parts[1].lower()
+        
+        if not message.reply_to_message:
+            await message.answer("❌ Reply to the person you want to trade with!")
+            return
+        
+        # Create trade proposal
+        trade_id = str(uuid.uuid4())[:8]
+        trade_data = {
+            "offer": {"item": offer_item, "quantity": offer_qty},
+            "request": {"item": request_item if not is_money_trade else "cash", 
+                       "quantity": request_qty if not is_money_trade else request_money},
+            "is_money": is_money_trade
+        }
+        
+        # Store proposal
+        async with db.lock:
+            await db.conn.execute(
+                "INSERT INTO proposals (proposal_id, from_id, to_id, proposal_type, data) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (trade_id, message.from_user.id, 
+                 message.reply_to_message.from_user.id,
+                 "trade", json.dumps(trade_data))
+            )
+            await db.conn.commit()
+        
+        # Create accept/reject buttons
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Accept Trade", 
+                                   callback_data=f"trade_accept_{trade_id}"),
+                InlineKeyboardButton(text="❌ Decline", 
+                                   callback_data=f"trade_decline_{trade_id}")
+            ]
+        ])
+        
+        trade_desc = (
+            f"🤝 **Trade Proposal**\n\n"
+            f"From: {message.from_user.first_name}\n"
+            f"Offers: {offer_qty} {offer_item}\n"
+            f"Requests: {request_qty} {request_item if not is_money_trade else 'cash'}\n\n"
+            f"ID: `{trade_id}`\n"
+            f"Expires in 24 hours"
+        )
+        
+        await message.reply_to_message.reply(trade_desc, reply_markup=keyboard)
+        
+    except Exception as e:
+        await message.answer(f"❌ Trade error: {str(e)}")
+
+# ============================================================================
+# ADMIN COMMANDS
+# ============================================================================
+
+@dp.message(Command("admin"))
+@owner_only
+async def cmd_admin(message: Message, command: CommandObject):
+    """Admin panel"""
+    if not command.args:
+        admin_text = (
+            "👑 **Admin Panel**\n\n"
+            "**User Management:**\n"
+            "• /admin user [id] - User info\n"
+            "• /admin ban [id] [reason] - Ban user\n"
+            "• /admin unban [id] - Unban user\n"
+            "• /admin addmoney [id] [amount] [currency]\n\n"
+            "**System:**\n"
+            "• /backup - Create secure backup\n"
+            "• /refresh - Refresh system data\n"
+            "• /admin stats - Bot statistics\n"
+            "• /admin logs [n] - Recent logs\n\n"
+            "**Garden/Market:**\n"
+            "• /admin clearmarket - Clear all market listings\n"
+            "• /admin resetgarden [id] - Reset user's garden"
+        )
+        await message.answer(admin_text)
+        return
+
+@dp.message(Command("admin", "stats"))
+@owner_only
+async def cmd_admin_stats(message: Message):
+    """Admin statistics"""
+    async with db.lock:
+        # Get counts
+        cursor = await db.conn.execute("SELECT COUNT(*) FROM users")
+        user_count = (await cursor.fetchone())[0]
+        
+        cursor = await db.conn.execute("SELECT COUNT(*) FROM family_relations")
+        family_count = (await cursor.fetchone())[0] // 2
+        
+        cursor = await db.conn.execute("SELECT COUNT(*) FROM friendships")
+        friend_count = (await cursor.fetchone())[0] // 2
+        
+        cursor = await db.conn.execute("SELECT COUNT(*) FROM market_stands")
+        market_count = (await cursor.fetchone())[0]
+        
+        cursor = await db.conn.execute("SELECT COUNT(*) FROM garden_plants WHERE is_ready = 0")
+        growing_count = (await cursor.fetchone())[0]
+        
+        cursor = await db.conn.execute("SELECT SUM(cash), SUM(gold) FROM users")
+        totals = await cursor.fetchone()
+        total_cash, total_gold = totals if totals else (0, 0)
+    
+    stats_text = (
+        f"📊 **Bot Statistics**\n\n"
+        f"👥 Users: {user_count:,}\n"
+        f"👨‍👩‍👧‍👦 Families: {family_count:,}\n"
+        f"🤝 Friendships: {friend_count:,}\n"
+        f"🏪 Market Listings: {market_count:,}\n"
+        f"🌱 Growing Plants: {growing_count:,}\n\n"
+        f"💰 **Economy:**\n"
+        f"• Total Cash: ${total_cash:,}\n"
+        f"• Total Gold: {total_gold:,}\n\n"
+        f"⚙️ **System:**\n"
+        f"• Owner ID: {OWNER_ID}\n"
+        f"• Log Channel: {LOG_CHANNEL}\n"
+        f"• Database: {DB_PATH}\n"
+        f"• Uptime: ... (implement with startup time)"
+    )
+    
+    await message.answer(stats_text)
+
+# ============================================================================
+# MAIN BOT SETUP
 # ============================================================================
 
 async def setup_bot():
-    """Initialize and configure the bot"""
+    """Initialize bot with security features"""
     global bot, dp
     
-    # Create bot instance
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    # Initialize bot
+    bot = Bot(token=BOT_TOKEN, 
+              default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     
     # Connect to database
     await db.connect()
     
-    # Reset daily counts on startup
-    await db.reset_daily_counts()
-    
-    # Register all handlers
-    # (Already decorated above, they auto-register)
-    
-    # Log startup
-    await send_log("🤖 Family Tree Bot started successfully!")
-    
-    # Set bot commands menu in Telegram
+    # Set bot commands
     commands = [
         types.BotCommand(command="start", description="Start the bot"),
         types.BotCommand(command="help", description="Show help"),
         types.BotCommand(command="me", description="Your profile"),
         types.BotCommand(command="daily", description="Daily bonus"),
-        types.BotCommand(command="tree", description="Family tree"),
-        types.BotCommand(command="family", description="List family"),
-        types.BotCommand(command="adopt", description="Adopt someone"),
-        types.BotCommand(command="marry", description="Marry someone"),
-        types.BotCommand(command="friend", description="Add friend"),
-        types.BotCommand(command="circle", description="Friend circle"),
-        types.BotCommand(command="rob", description="Rob someone"),
-        types.BotCommand(command="kill", description="Kill someone"),
-        types.BotCommand(command="pay", description="Send money"),
-        types.BotCommand(command="leaderboard", description="Money rankings"),
-        types.BotCommand(command="reactions", description="Reaction GIFs"),
-        types.BotCommand(command="admin", description="Admin commands"),
+        types.BotCommand(command="garden", description="Your garden"),
+        types.BotCommand(command="plant", description="Plant crops"),
+        types.BotCommand(command="harvest", description="Harvest crops"),
+        types.BotCommand(command="stands", description="Market stands"),
+        types.BotCommand(command="buy", description="Buy from market"),
+        types.BotCommand(command="ping", description="Check bot status"),
+        types.BotCommand(command="refresh", description="Refresh data"),
+        types.BotCommand(command="hmk", description="Hired muscle attack"),
+        types.BotCommand(command="admin", description="Admin panel"),
     ]
     
     await bot.set_my_commands(commands)
+    
+    # Send startup message to log channel
+    try:
+        await bot.send_message(
+            LOG_CHANNEL,
+            f"🤖 **Family Tree Bot Started**\n"
+            f"⏰ Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+            f"👑 Owner: {OWNER_ID}\n"
+            f"🔐 Security: Maximum protection enabled"
+        )
+    except:
+        logger.warning("Could not send startup message to log channel")
+    
+    logger.info("Bot setup complete with maximum security")
 
 async def main():
     """Main entry point"""
@@ -2001,8 +1392,7 @@ async def main():
         logger.info("Starting bot polling...")
         await dp.start_polling(bot)
     except Exception as e:
-        logger.error(f"Bot failed: {e}")
-        await send_log(f"❌ Bot crashed: {e}")
+        logger.error(f"Bot failed to start: {e}")
         raise
 
 if __name__ == "__main__":

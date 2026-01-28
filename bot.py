@@ -58,7 +58,7 @@ import sqlite3
 # ============================================================================
 
 OWNER_ID = 6108185460
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8296250010:AAFSZ9psxmooDvODWCTvnvn4y7K3SsZN_Rc")
 LOG_CHANNEL = -1003662720845
 BOT_USERNAME = "@Familly_TreeBot"
 DB_PATH = os.getenv("DB_PATH", "family_bot.db")

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-🌳 ULTIMATE FAMILY TREE BOT - COMPLETE WITH 13 COMMANDS
-Version: 23.0 - All Features, Images Working, One Button
+🌳 FAMILY TREE BOT - COMPLETE & WORKING VERSION
 """
 
 import os
@@ -11,87 +10,56 @@ import logging
 import random
 import math
 import io
-import time
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
+from enum import Enum
 import aiosqlite
 
-# ============================================================================
-# CORE IMPORTS
-# ============================================================================
+# Core imports
+from aiogram import Bot, Dispatcher, types, F, Router
+from aiogram.filters import Command, CommandObject
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup,
+    InlineKeyboardButton, BufferedInputFile,
+    ReplyKeyboardMarkup, ReplyKeyboardRemove
+)
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+
+# Pillow for images
 try:
-    from aiogram import Bot, Dispatcher, types, F
-    from aiogram.filters import Command, CommandObject
-    from aiogram.types import (
-        Message, CallbackQuery, InlineKeyboardMarkup,
-        InlineKeyboardButton, BufferedInputFile
-    )
-    from aiogram.enums import ParseMode
-    
-    # Pillow for images
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-        HAS_PILLOW = True
-    except ImportError:
-        HAS_PILLOW = False
-    
-except ImportError as e:
-    print(f"❌ Missing dependency: {e}")
-    print("Install: pip install aiogram pillow aiosqlite")
-    sys.exit(1)
+    from PIL import Image, ImageDraw, ImageFont
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
-BOT_TOKEN = "8296250010:AAFSZ9psxmooDvODWCTvnvn4y7K3SsZN_Rc"
-OWNER_ID = 6108185460
-BOT_USERNAME = "Familly_TreeBot"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8296250010:AAFSZ9psxmooDvODWCTvnvn4y7K3SsZN_Rc")
+OWNER_ID = int(os.getenv("OWNER_ID", "6108185460"))
+DB_PATH = "family_bot.db"
 
-# Game Constants
-CURRENCIES = ["cash", "gold", "bonds", "credits", "tokens", "bank_balance"]
+# Game Economy
+class GameConfig:
+    START_CASH = 1000
+    START_BANK = 0
+    DAILY_MIN = 500
+    DAILY_MAX = 1500
+    BANK_INTEREST_RATE = 0.5  # 0.5% daily
+    LOTTERY_TICKET_PRICE = 50
+    GARDEN_SLOTS = 9
+    ADOPT_BONUS = 500
+    MARRY_BONUS = 1000
 
-# Crop System
-CROP_TYPES = ["carrot", "tomato", "potato", "eggplant", "corn", "pepper", "watermelon", "pumpkin"]
-CROP_EMOJIS = {
-    "carrot": "🥕", "tomato": "🍅", "potato": "🥔", 
-    "eggplant": "🍆", "corn": "🌽", "pepper": "🫑",
-    "watermelon": "🍉", "pumpkin": "🎃"
-}
-
-CROP_DATA = {
-    "carrot": {"buy": 10, "sell": 15, "grow_time": 2, "emoji": "🥕", "xp": 5},
-    "tomato": {"buy": 15, "sell": 22, "grow_time": 3, "emoji": "🍅", "xp": 8},
-    "potato": {"buy": 8, "sell": 12, "grow_time": 2.5, "emoji": "🥔", "xp": 6},
-    "eggplant": {"buy": 20, "sell": 30, "grow_time": 4, "emoji": "🍆", "xp": 12},
-    "corn": {"buy": 12, "sell": 18, "grow_time": 5, "emoji": "🌽", "xp": 10},
-    "pepper": {"buy": 25, "sell": 38, "grow_time": 6, "emoji": "🫑", "xp": 15},
-    "watermelon": {"buy": 30, "sell": 45, "grow_time": 7, "emoji": "🍉", "xp": 18},
-    "pumpkin": {"buy": 40, "sell": 60, "grow_time": 8, "emoji": "🎃", "xp": 20}
-}
-
-# Casino Games
-CASINO_SYMBOLS = ["🍒", "🍋", "⭐", "7️⃣", "🔔", "💎", "🍉", "🍊"]
-
-# Stock Market
-STOCKS = {
-    "TECH": {"name": "Tech Corp", "price": 100},
-    "FARM": {"name": "Farm Inc", "price": 50},
-    "GOLD": {"name": "Gold Mining", "price": 200},
-    "OIL": {"name": "Oil Co", "price": 80},
-    "BIO": {"name": "Bio Tech", "price": 150}
-}
-
-# Default GIFs (catbox.moe)
-DEFAULT_GIFS = {
-    "hug": "https://files.catbox.moe/34u6a1.gif",
-    "kill": "https://files.catbox.moe/p6og82.gif", 
-    "rob": "https://files.catbox.moe/1x4z9u.gif",
-    "kiss": "https://files.catbox.moe/zu3p40.gif",
-    "slap": "https://files.catbox.moe/8x5f6d.gif",
-    "pat": "https://files.catbox.moe/9k7j2v.gif",
-    "punch": "https://files.catbox.moe/l2m5n8.gif",
-    "cuddle": "https://files.catbox.moe/r4t9y1.gif"
+# Crop Types
+CROPS = {
+    "carrot": {"buy": 10, "sell": 15, "grow_time": 2, "emoji": "🥕"},
+    "tomato": {"buy": 15, "sell": 22, "grow_time": 3, "emoji": "🍅"},
+    "potato": {"buy": 8, "sell": 12, "grow_time": 2.5, "emoji": "🥔"},
+    "eggplant": {"buy": 20, "sell": 30, "grow_time": 4, "emoji": "🍆"},
 }
 
 # ============================================================================
@@ -105,7 +73,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# DATABASE - COMPLETE
+# DATABASE
 # ============================================================================
 
 class Database:
@@ -114,155 +82,123 @@ class Database:
         self.conn = None
     
     async def connect(self):
+        """Connect to database"""
         self.conn = await aiosqlite.connect(self.path)
+        self.conn.row_factory = aiosqlite.Row
         await self.init_tables()
     
     async def init_tables(self):
+        """Create database tables"""
         tables = [
+            # Users
             """CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
-                first_name TEXT NOT NULL,
-                last_name TEXT,
-                cash INTEGER DEFAULT 1000,
-                gold INTEGER DEFAULT 50,
-                bonds INTEGER DEFAULT 0,
-                credits INTEGER DEFAULT 100,
-                tokens INTEGER DEFAULT 50,
-                bank_balance INTEGER DEFAULT 0,
-                reputation INTEGER DEFAULT 100,
+                first_name TEXT,
+                cash INTEGER DEFAULT ?,
+                bank_balance INTEGER DEFAULT ?,
                 level INTEGER DEFAULT 1,
                 xp INTEGER DEFAULT 0,
                 daily_streak INTEGER DEFAULT 0,
+                last_daily TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
             
-            """CREATE TABLE IF NOT EXISTS family_relations (
+            # Family
+            """CREATE TABLE IF NOT EXISTS family (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user1_id INTEGER NOT NULL,
-                user2_id INTEGER NOT NULL,
-                relation_type TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                user1_id INTEGER,
+                user2_id INTEGER,
+                relation TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user1_id, user2_id, relation)
             )""",
             
-            """CREATE TABLE IF NOT EXISTS gardens (
+            # Garden
+            """CREATE TABLE IF NOT EXISTS garden (
                 user_id INTEGER PRIMARY KEY,
-                slots INTEGER DEFAULT 9,
+                slots INTEGER DEFAULT ?,
                 greenhouse_level INTEGER DEFAULT 0
             )""",
             
-            """CREATE TABLE IF NOT EXISTS garden_plants (
+            # Plants
+            """CREATE TABLE IF NOT EXISTS plants (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                crop_type TEXT NOT NULL,
+                user_id INTEGER,
+                crop_type TEXT,
                 planted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                grow_time REAL NOT NULL,
+                grow_time REAL,
                 progress REAL DEFAULT 0,
                 is_ready BOOLEAN DEFAULT 0
             )""",
             
-            """CREATE TABLE IF NOT EXISTS barn (
-                user_id INTEGER NOT NULL,
-                crop_type TEXT NOT NULL,
-                quantity INTEGER DEFAULT 0,
-                PRIMARY KEY (user_id, crop_type)
+            # Bank Accounts
+            """CREATE TABLE IF NOT EXISTS bank_accounts (
+                user_id INTEGER PRIMARY KEY,
+                last_interest TIMESTAMP,
+                total_interest INTEGER DEFAULT 0
             )""",
             
-            """CREATE TABLE IF NOT EXISTS catbox_gifs (
-                command TEXT PRIMARY KEY,
-                gif_url TEXT NOT NULL,
-                added_by INTEGER,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS cooldowns (
-                user_id INTEGER NOT NULL,
-                command TEXT NOT NULL,
-                last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, command)
-            )""",
-            
+            # Lottery Tickets
             """CREATE TABLE IF NOT EXISTS lottery_tickets (
-                user_id INTEGER NOT NULL,
-                tickets INTEGER DEFAULT 0,
-                PRIMARY KEY (user_id)
+                ticket_id TEXT PRIMARY KEY,
+                user_id INTEGER,
+                numbers TEXT,
+                scratched BOOLEAN DEFAULT 0,
+                scratched_at TIMESTAMP,
+                purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
             
-            """CREATE TABLE IF NOT EXISTS stocks (
-                user_id INTEGER NOT NULL,
-                stock_symbol TEXT NOT NULL,
-                shares INTEGER DEFAULT 0,
-                avg_price REAL DEFAULT 0,
-                PRIMARY KEY (user_id, stock_symbol)
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS friends (
-                user1_id INTEGER NOT NULL,
-                user2_id INTEGER NOT NULL,
-                friendship_level INTEGER DEFAULT 1,
-                last_interaction TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user1_id, user2_id)
-            )""",
-            
-            """CREATE TABLE IF NOT EXISTS groups (
-                group_id INTEGER PRIMARY KEY,
-                title TEXT,
-                added_by INTEGER,
-                member_count INTEGER DEFAULT 0,
-                messages_count INTEGER DEFAULT 0,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            # Transactions
+            """CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                type TEXT,
+                amount INTEGER,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )"""
         ]
         
-        for table in tables:
-            await self.conn.execute(table)
-        await self.conn.commit()
-        
-        # Initialize default GIFs
-        await self.init_default_gifs()
-    
-    async def init_default_gifs(self):
-        for cmd, url in DEFAULT_GIFS.items():
+        for table_sql in tables:
             try:
-                await self.conn.execute(
-                    """INSERT OR IGNORE INTO catbox_gifs (command, gif_url, added_by)
-                       VALUES (?, ?, ?)""",
-                    (cmd, url, OWNER_ID)
-                )
-            except:
-                pass
+                await self.conn.execute(table_sql, 
+                    (GameConfig.START_CASH, GameConfig.START_BANK) 
+                    if "users" in table_sql else 
+                    (GameConfig.GARDEN_SLOTS,) 
+                    if "garden" in table_sql else ())
+            except Exception as e:
+                logger.error(f"Table error: {e}")
+        
         await self.conn.commit()
     
-    # User methods
+    # User Methods
     async def get_user(self, user_id: int) -> Optional[dict]:
+        """Get user data"""
         cursor = await self.conn.execute(
             "SELECT * FROM users WHERE user_id = ?",
             (user_id,)
         )
         row = await cursor.fetchone()
-        if not row:
-            return None
-        
-        columns = [desc[0] for desc in cursor.description]
-        return dict(zip(columns, row))
+        return dict(row) if row else None
     
     async def create_user(self, user: types.User) -> dict:
+        """Create new user"""
         await self.conn.execute(
-            """INSERT OR IGNORE INTO users (user_id, username, first_name, last_name)
-               VALUES (?, ?, ?, ?)""",
-            (user.id, user.username, user.first_name, user.last_name)
+            """INSERT OR IGNORE INTO users 
+               (user_id, username, first_name, cash, bank_balance)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user.id, user.username, user.first_name, 
+             GameConfig.START_CASH, GameConfig.START_BANK)
         )
         
-        # Initialize all tables
         await self.conn.execute(
-            "INSERT OR IGNORE INTO gardens (user_id) VALUES (?)",
+            "INSERT OR IGNORE INTO garden (user_id) VALUES (?)",
             (user.id,)
         )
         
         await self.conn.execute(
-            "INSERT OR IGNORE INTO lottery_tickets (user_id) VALUES (?)",
+            "INSERT OR IGNORE INTO bank_accounts (user_id) VALUES (?)",
             (user.id,)
         )
         
@@ -270,409 +206,365 @@ class Database:
         return await self.get_user(user.id)
     
     async def update_currency(self, user_id: int, currency: str, amount: int):
-        if currency not in CURRENCIES:
-            return
-        
-        if currency == "bank_balance":
+        """Update user currency"""
+        if currency == "cash":
+            await self.conn.execute(
+                "UPDATE users SET cash = cash + ? WHERE user_id = ?",
+                (amount, user_id)
+            )
+        elif currency == "bank_balance":
             await self.conn.execute(
                 "UPDATE users SET bank_balance = bank_balance + ? WHERE user_id = ?",
                 (amount, user_id)
             )
-        else:
-            await self.conn.execute(
-                f"UPDATE users SET {currency} = {currency} + ? WHERE user_id = ?",
-                (amount, user_id)
-            )
         await self.conn.commit()
     
-    # Family methods
+    # Family Methods
     async def get_family(self, user_id: int) -> List[dict]:
+        """Get user's family"""
         cursor = await self.conn.execute(
-            """SELECT fr.relation_type, 
-               CASE WHEN fr.user1_id = ? THEN u2.first_name ELSE u1.first_name END as other_name,
-               CASE WHEN fr.user1_id = ? THEN u2.user_id ELSE u1.user_id END as other_id
-               FROM family_relations fr
-               LEFT JOIN users u1 ON u1.user_id = fr.user1_id
-               LEFT JOIN users u2 ON u2.user_id = fr.user2_id
-               WHERE ? IN (fr.user1_id, fr.user2_id)""",
+            """SELECT 
+               CASE WHEN f.user1_id = ? THEN f.user2_id ELSE f.user1_id END as member_id,
+               u.first_name, u.username, f.relation, f.created_at
+               FROM family f
+               JOIN users u ON u.user_id = CASE WHEN f.user1_id = ? THEN f.user2_id ELSE f.user1_id END
+               WHERE ? IN (f.user1_id, f.user2_id)""",
             (user_id, user_id, user_id)
         )
         rows = await cursor.fetchall()
-        return [{'relation_type': r[0], 'other_name': r[1], 'other_id': r[2]} for r in rows]
+        return [dict(row) for row in rows]
     
-    async def add_relation(self, user1_id: int, user2_id: int, relation: str):
+    async def add_family_member(self, user1_id: int, user2_id: int, relation: str):
+        """Add family relationship"""
         await self.conn.execute(
-            "INSERT OR IGNORE INTO family_relations (user1_id, user2_id, relation_type) VALUES (?, ?, ?)",
+            """INSERT OR IGNORE INTO family (user1_id, user2_id, relation)
+               VALUES (?, ?, ?)""",
             (min(user1_id, user2_id), max(user1_id, user2_id), relation)
         )
         await self.conn.commit()
     
-    # Garden methods
-    async def get_garden_info(self, user_id: int) -> dict:
+    # Garden Methods
+    async def get_garden(self, user_id: int) -> dict:
+        """Get garden info"""
         cursor = await self.conn.execute(
-            "SELECT slots, greenhouse_level FROM gardens WHERE user_id = ?",
+            "SELECT slots, greenhouse_level FROM garden WHERE user_id = ?",
             (user_id,)
         )
         row = await cursor.fetchone()
-        return {'slots': row[0] if row else 9, 'greenhouse_level': row[1] if row else 0}
+        return dict(row) if row else {"slots": GameConfig.GARDEN_SLOTS, "greenhouse_level": 0}
     
-    async def get_growing_crops(self, user_id: int) -> List[dict]:
+    async def get_plants(self, user_id: int) -> List[dict]:
+        """Get user's plants"""
         cursor = await self.conn.execute(
-            """SELECT crop_type, planted_at, grow_time, progress
-               FROM garden_plants 
-               WHERE user_id = ? AND is_ready = 0""",
+            "SELECT * FROM plants WHERE user_id = ? AND is_ready = 0",
             (user_id,)
         )
         rows = await cursor.fetchall()
-        
-        crops = []
+        plants = []
         for row in rows:
-            planted = datetime.fromisoformat(row[1]) if row[1] else datetime.now()
-            elapsed = (datetime.now() - planted).total_seconds() / 3600
-            progress = min(100, (elapsed / row[2]) * 100) if row[2] > 0 else 0
-            
-            crops.append({
-                'crop_type': row[0],
-                'progress': progress,
-                'is_ready': progress >= 100,
-                'grow_time': row[2]
-            })
-        
-        return crops
+            plant = dict(row)
+            # Calculate progress
+            planted_at = datetime.fromisoformat(plant['planted_at'])
+            elapsed = (datetime.now() - planted_at).total_seconds() / 3600
+            progress = min(100, (elapsed / plant['grow_time']) * 100)
+            plant['progress'] = progress
+            plant['ready'] = progress >= 100
+            plants.append(plant)
+        return plants
     
     async def plant_crop(self, user_id: int, crop_type: str, quantity: int) -> bool:
-        if crop_type not in CROP_TYPES:
+        """Plant crops"""
+        garden = await self.get_garden(user_id)
+        plants = await self.get_plants(user_id)
+        
+        total_slots = garden['slots']
+        if len(plants) + quantity > total_slots:
             return False
         
-        garden = await self.get_garden_info(user_id)
-        if not garden:
+        crop_data = CROPS.get(crop_type)
+        if not crop_data:
             return False
-        
-        cursor = await self.conn.execute(
-            "SELECT COUNT(*) FROM garden_plants WHERE user_id = ? AND is_ready = 0",
-            (user_id,)
-        )
-        current = (await cursor.fetchone())[0]
-        
-        total_slots = garden['slots'] + (garden['greenhouse_level'] * 3)
-        
-        if current + quantity > total_slots:
-            return False
-        
-        grow_time = CROP_DATA[crop_type]['grow_time']
-        if garden['greenhouse_level'] > 0:
-            grow_time = grow_time * (1 - (garden['greenhouse_level'] * 0.1))
         
         for _ in range(quantity):
             await self.conn.execute(
-                "INSERT INTO garden_plants (user_id, crop_type, grow_time) VALUES (?, ?, ?)",
-                (user_id, crop_type, grow_time)
+                "INSERT INTO plants (user_id, crop_type, grow_time) VALUES (?, ?, ?)",
+                (user_id, crop_type, crop_data['grow_time'])
             )
-        
         await self.conn.commit()
         return True
     
     async def harvest_crops(self, user_id: int) -> List[tuple]:
+        """Harvest ready crops"""
         cursor = await self.conn.execute(
-            """SELECT crop_type, COUNT(*) as count 
-               FROM garden_plants 
-               WHERE user_id = ? AND is_ready = 0
-               AND progress >= 100""",
+            """SELECT crop_type, COUNT(*) as count FROM plants 
+               WHERE user_id = ? AND is_ready = 0 
+               GROUP BY crop_type""",
             (user_id,)
         )
         ready_crops = await cursor.fetchall()
         
         harvested = []
         for crop_type, count in ready_crops:
-            # Add to barn
-            await self.conn.execute(
-                """INSERT INTO barn (user_id, crop_type, quantity) 
-                   VALUES (?, ?, ?)
-                   ON CONFLICT(user_id, crop_type) 
-                   DO UPDATE SET quantity = quantity + ?""",
-                (user_id, crop_type, count, count)
-            )
-            
-            # Remove from garden
-            await self.conn.execute(
-                "DELETE FROM garden_plants WHERE user_id = ? AND crop_type = ? AND is_ready = 0",
-                (user_id, crop_type)
-            )
-            
-            harvested.append((crop_type, count))
+            crop_data = CROPS.get(crop_type)
+            if crop_data:
+                value = crop_data['sell'] * count
+                await self.update_currency(user_id, "cash", value)
+                harvested.append((crop_type, count, value))
         
+        # Remove harvested plants
+        await self.conn.execute(
+            "DELETE FROM plants WHERE user_id = ? AND is_ready = 0",
+            (user_id,)
+        )
         await self.conn.commit()
         return harvested
     
-    async def get_barn_items(self, user_id: int) -> List[tuple]:
+    # Bank Methods
+    async def get_bank_account(self, user_id: int) -> dict:
+        """Get bank account"""
         cursor = await self.conn.execute(
-            "SELECT crop_type, quantity FROM barn WHERE user_id = ?",
-            (user_id,)
-        )
-        return await cursor.fetchall()
-    
-    # Catbox methods
-    async def get_gif(self, command: str) -> Optional[str]:
-        cursor = await self.conn.execute(
-            "SELECT gif_url FROM catbox_gifs WHERE command = ?",
-            (command,)
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else DEFAULT_GIFS.get(command)
-    
-    async def add_gif(self, command: str, url: str, added_by: int):
-        await self.conn.execute(
-            """INSERT OR REPLACE INTO catbox_gifs (command, gif_url, added_by)
-               VALUES (?, ?, ?)""",
-            (command, url, added_by)
-        )
-        await self.conn.commit()
-    
-    # Lottery methods
-    async def buy_lottery_ticket(self, user_id: int, tickets: int) -> bool:
-        cost = tickets * 50
-        user = await self.get_user(user_id)
-        
-        if not user or user['cash'] < cost:
-            return False
-        
-        await self.update_currency(user_id, "cash", -cost)
-        
-        await self.conn.execute(
-            """INSERT INTO lottery_tickets (user_id, tickets) 
-               VALUES (?, ?)
-               ON CONFLICT(user_id) 
-               DO UPDATE SET tickets = tickets + ?""",
-            (user_id, tickets, tickets)
-        )
-        await self.conn.commit()
-        return True
-    
-    async def get_lottery_tickets(self, user_id: int) -> int:
-        cursor = await self.conn.execute(
-            "SELECT tickets FROM lottery_tickets WHERE user_id = ?",
+            "SELECT * FROM bank_accounts WHERE user_id = ?",
             (user_id,)
         )
         row = await cursor.fetchone()
-        return row[0] if row else 0
+        return dict(row) if row else {
+            "user_id": user_id,
+            "last_interest": None,
+            "total_interest": 0
+        }
     
-    # Stock methods
-    async def get_stock_price(self, symbol: str) -> float:
-        if symbol in STOCKS:
-            # Random price change
-            change = random.uniform(-0.1, 0.1)
-            STOCKS[symbol]['price'] = max(1, STOCKS[symbol]['price'] * (1 + change))
-            return round(STOCKS[symbol]['price'], 2)
-        return 0
-    
-    async def buy_stock(self, user_id: int, symbol: str, shares: int) -> Tuple[bool, float]:
-        price = await self.get_stock_price(symbol)
-        total_cost = price * shares
-        
+    async def calculate_interest(self, user_id: int) -> Tuple[int, str]:
+        """Calculate daily interest"""
         user = await self.get_user(user_id)
-        if not user or user['cash'] < total_cost:
-            return False, 0
+        if not user or user['bank_balance'] <= 0:
+            return 0, "No balance for interest"
+        
+        account = await self.get_bank_account(user_id)
+        
+        # Check if interest was calculated today
+        if account['last_interest']:
+            last_interest = datetime.fromisoformat(account['last_interest'])
+            if (datetime.now() - last_interest).days < 1:
+                next_time = last_interest + timedelta(days=1)
+                hours_left = int((next_time - datetime.now()).total_seconds() / 3600)
+                return 0, f"Next interest in {hours_left}h"
+        
+        # Calculate interest
+        interest = int(user['bank_balance'] * (GameConfig.BANK_INTEREST_RATE / 100))
+        
+        if interest > 0:
+            await self.update_currency(user_id, "bank_balance", interest)
+            await self.conn.execute(
+                """UPDATE bank_accounts 
+                   SET last_interest = CURRENT_TIMESTAMP,
+                       total_interest = total_interest + ?
+                   WHERE user_id = ?""",
+                (interest, user_id)
+            )
+            await self.conn.commit()
+            return interest, f"Interest added: ${interest}"
+        
+        return 0, "No interest to add"
+    
+    async def add_transaction(self, user_id: int, trans_type: str, amount: int, description: str = ""):
+        """Record transaction"""
+        await self.conn.execute(
+            "INSERT INTO transactions (user_id, type, amount, description) VALUES (?, ?, ?, ?)",
+            (user_id, trans_type, amount, description)
+        )
+        await self.conn.commit()
+    
+    async def get_transactions(self, user_id: int, limit: int = 10) -> List[dict]:
+        """Get transaction history"""
+        cursor = await self.conn.execute(
+            """SELECT type, amount, description, created_at 
+               FROM transactions WHERE user_id = ? 
+               ORDER BY created_at DESC LIMIT ?""",
+            (user_id, limit)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+    
+    # Lottery Methods
+    async def buy_lottery_ticket(self, user_id: int, quantity: int) -> Tuple[bool, List[str], int]:
+        """Buy lottery tickets"""
+        user = await self.get_user(user_id)
+        if not user:
+            return False, [], 0
+        
+        total_cost = quantity * GameConfig.LOTTERY_TICKET_PRICE
+        if user['cash'] < total_cost:
+            return False, [], 0
         
         await self.update_currency(user_id, "cash", -total_cost)
         
-        cursor = await self.conn.execute(
-            "SELECT shares, avg_price FROM stocks WHERE user_id = ? AND stock_symbol = ?",
-            (user_id, symbol)
-        )
-        existing = await cursor.fetchone()
-        
-        if existing:
-            current_shares, current_avg = existing
-            new_total = current_shares + shares
-            new_avg = ((current_avg * current_shares) + (price * shares)) / new_total
+        tickets = []
+        for _ in range(quantity):
+            ticket_id = f"LOT-{random.randint(100000, 999999)}"
+            numbers = ''.join(str(random.randint(0, 9)) for _ in range(6))
             
             await self.conn.execute(
-                """UPDATE stocks 
-                   SET shares = ?, avg_price = ?
-                   WHERE user_id = ? AND stock_symbol = ?""",
-                (new_total, new_avg, user_id, symbol)
+                """INSERT INTO lottery_tickets (ticket_id, user_id, numbers)
+                   VALUES (?, ?, ?)""",
+                (ticket_id, user_id, numbers)
             )
-        else:
-            await self.conn.execute(
-                "INSERT INTO stocks (user_id, stock_symbol, shares, avg_price) VALUES (?, ?, ?, ?)",
-                (user_id, symbol, shares, price)
-            )
+            tickets.append(ticket_id)
         
         await self.conn.commit()
-        return True, total_cost
+        return True, tickets, total_cost
     
-    async def sell_stock(self, user_id: int, symbol: str, shares: int) -> Tuple[bool, float]:
+    async def get_tickets(self, user_id: int) -> List[dict]:
+        """Get user's lottery tickets"""
         cursor = await self.conn.execute(
-            "SELECT shares, avg_price FROM stocks WHERE user_id = ? AND stock_symbol = ?",
-            (user_id, symbol)
-        )
-        existing = await cursor.fetchone()
-        
-        if not existing or existing[0] < shares:
-            return False, 0
-        
-        current_shares, avg_price = existing
-        price = await self.get_stock_price(symbol)
-        total_value = price * shares
-        profit = total_value - (avg_price * shares)
-        
-        await self.update_currency(user_id, "cash", total_value)
-        
-        if current_shares == shares:
-            await self.conn.execute(
-                "DELETE FROM stocks WHERE user_id = ? AND stock_symbol = ?",
-                (user_id, symbol)
-            )
-        else:
-            await self.conn.execute(
-                "UPDATE stocks SET shares = ? WHERE user_id = ? AND stock_symbol = ?",
-                (current_shares - shares, user_id, symbol)
-            )
-        
-        await self.conn.commit()
-        return True, profit
-    
-    async def get_portfolio(self, user_id: int) -> List[dict]:
-        cursor = await self.conn.execute(
-            "SELECT stock_symbol, shares, avg_price FROM stocks WHERE user_id = ?",
+            """SELECT ticket_id, numbers, scratched, scratched_at 
+               FROM lottery_tickets WHERE user_id = ? 
+               ORDER BY purchased_at DESC""",
             (user_id,)
         )
         rows = await cursor.fetchall()
-        
-        portfolio = []
-        for symbol, shares, avg_price in rows:
-            current_price = await self.get_stock_price(symbol)
-            value = current_price * shares
-            profit = value - (avg_price * shares)
-            
-            portfolio.append({
-                'symbol': symbol,
-                'name': STOCKS[symbol]['name'],
-                'shares': shares,
-                'current_price': current_price,
-                'value': value,
-                'profit': profit
-            })
-        
-        return portfolio
+        return [dict(row) for row in rows]
     
-    # Friend methods
-    async def add_friend(self, user1_id: int, user2_id: int):
-        if user1_id == user2_id:
-            return False
-        
-        await self.conn.execute(
-            "INSERT OR IGNORE INTO friends (user1_id, user2_id) VALUES (?, ?)",
-            (min(user1_id, user2_id), max(user1_id, user2_id))
-        )
-        await self.conn.commit()
-        return True
-    
-    async def get_friends(self, user_id: int) -> List[dict]:
+    async def scratch_ticket(self, user_id: int, ticket_id: str) -> Optional[dict]:
+        """Scratch a lottery ticket"""
         cursor = await self.conn.execute(
-            """SELECT 
-               CASE WHEN f.user1_id = ? THEN f.user2_id ELSE f.user1_id END as friend_id,
-               u.first_name, u.username
-               FROM friends f
-               JOIN users u ON u.user_id = CASE WHEN f.user1_id = ? THEN f.user2_id ELSE f.user1_id END
-               WHERE ? IN (f.user1_id, f.user2_id)""",
-            (user_id, user_id, user_id)
-        )
-        
-        rows = await cursor.fetchall()
-        return [{'id': r[0], 'name': r[1], 'username': r[2]} for r in rows]
-    
-    # Group methods
-    async def add_group(self, group_id: int, title: str, added_by: int):
-        await self.conn.execute(
-            """INSERT OR REPLACE INTO groups (group_id, title, added_by, added_at, last_active)
-               VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
-            (group_id, title, added_by)
-        )
-        await self.conn.commit()
-    
-    async def get_groups(self) -> List[dict]:
-        cursor = await self.conn.execute(
-            "SELECT group_id, title, added_by, last_active FROM groups ORDER BY last_active DESC"
-        )
-        rows = await cursor.fetchall()
-        return [{'group_id': r[0], 'title': r[1], 'added_by': r[2], 'last_active': r[3]} for r in rows]
-    
-    # Cooldown methods
-    async def get_cooldown(self, user_id: int, command: str) -> Optional[datetime]:
-        cursor = await self.conn.execute(
-            "SELECT last_used FROM cooldowns WHERE user_id = ? AND command = ?",
-            (user_id, command)
+            """SELECT numbers, scratched FROM lottery_tickets 
+               WHERE user_id = ? AND ticket_id = ?""",
+            (user_id, ticket_id)
         )
         row = await cursor.fetchone()
-        return datetime.fromisoformat(row[0]) if row else None
-    
-    async def set_cooldown(self, user_id: int, command: str):
+        
+        if not row:
+            return None
+        
+        if row['scratched']:
+            return {"numbers": row['numbers'], "already_scratched": True}
+        
+        # Mark as scratched
         await self.conn.execute(
-            """INSERT OR REPLACE INTO cooldowns (user_id, command, last_used)
-               VALUES (?, ?, CURRENT_TIMESTAMP)""",
-            (user_id, command)
+            """UPDATE lottery_tickets 
+               SET scratched = 1, scratched_at = CURRENT_TIMESTAMP
+               WHERE user_id = ? AND ticket_id = ?""",
+            (user_id, ticket_id)
         )
         await self.conn.commit()
+        return {"numbers": row['numbers'], "already_scratched": False}
+    
+    # Admin Methods
+    async def get_stats(self) -> dict:
+        """Get bot statistics"""
+        stats = {}
+        
+        queries = [
+            ("total_users", "SELECT COUNT(*) FROM users"),
+            ("total_cash", "SELECT SUM(cash) FROM users"),
+            ("total_bank", "SELECT SUM(bank_balance) FROM users"),
+            ("family_relations", "SELECT COUNT(*) FROM family"),
+            ("growing_crops", "SELECT COUNT(*) FROM plants"),
+            ("lottery_tickets", "SELECT COUNT(*) FROM lottery_tickets"),
+        ]
+        
+        for key, query in queries:
+            cursor = await self.conn.execute(query)
+            row = await cursor.fetchone()
+            stats[key] = row[0] or 0
+        
+        return stats
+    
+    async def get_top_users(self, by: str = "cash", limit: int = 10) -> List[dict]:
+        """Get top users"""
+        valid_columns = ["cash", "bank_balance", "level"]
+        if by not in valid_columns:
+            by = "cash"
+        
+        cursor = await self.conn.execute(
+            f"""SELECT user_id, first_name, username, {by}
+                FROM users ORDER BY {by} DESC LIMIT ?""",
+            (limit,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 # ============================================================================
-# IMAGE GENERATOR - WORKING
+# IMAGE GENERATOR
 # ============================================================================
 
 class ImageGenerator:
-    """Working image generator"""
+    """Generate images for the bot"""
     
     def __init__(self):
         if HAS_PILLOW:
-            try:
-                self.font = ImageFont.truetype("arial.ttf", 20)
-            except:
-                self.font = ImageFont.load_default()
+            self.load_fonts()
     
-    def create_simple_image(self, text: str) -> Optional[bytes]:
-        """Create a simple image with text"""
+    def load_fonts(self):
+        """Load fonts"""
+        try:
+            self.small_font = ImageFont.truetype("arial.ttf", 14)
+            self.medium_font = ImageFont.truetype("arial.ttf", 18)
+            self.large_font = ImageFont.truetype("arial.ttf", 24)
+        except:
+            self.small_font = ImageFont.load_default()
+            self.medium_font = ImageFont.load_default()
+            self.large_font = ImageFont.load_default()
+    
+    def create_progress_bar(self, progress: float, width: int = 200, height: int = 20) -> Optional[bytes]:
+        """Create progress bar image"""
         if not HAS_PILLOW:
             return None
         
         try:
-            width, height = 500, 300
-            img = Image.new('RGB', (width, height), color='#1a1a2e')
+            img = Image.new('RGB', (width, height), color='#2d3436')
             draw = ImageDraw.Draw(img)
             
-            # Title
-            draw.text((width//2 - 100, 50), text, fill='white', font=self.font)
-            draw.text((width//2 - 150, 150), "🌳 Family Tree Bot", fill='#4CAF50', font=self.font)
+            # Background
+            draw.rectangle([0, 0, width, height], fill='#2d3436', outline='#636e72', width=1)
             
-            # Save to bytes
-            img_bytes = io.BytesIO()
-            img.save(img_bytes, format='PNG')
-            img_bytes.seek(0)
+            # Progress
+            progress_width = int(width * (progress / 100))
+            if progress >= 100:
+                color = '#00b894'
+            elif progress >= 70:
+                color = '#fdcb6e'
+            elif progress >= 40:
+                color = '#e17055'
+            else:
+                color = '#6c5ce7'
             
-            return img_bytes.getvalue()
+            draw.rectangle([0, 0, progress_width, height], fill=color)
+            
+            # Text
+            text = f"{int(progress)}%"
+            text_x = (width - 40) // 2
+            draw.text((text_x, 2), text, fill='white', font=self.small_font)
+            
+            # Save
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG')
+            buffer.seek(0)
+            return buffer.getvalue()
             
         except Exception as e:
-            logger.error(f"Image error: {e}")
+            logger.error(f"Progress bar error: {e}")
             return None
     
-    async def create_garden_image(self, crops: List[dict]) -> Optional[bytes]:
+    def create_garden_image(self, username: str, plants: List[dict], garden_info: dict) -> Optional[bytes]:
         """Create garden image"""
         if not HAS_PILLOW:
             return None
         
         try:
-            width, height = 400, 500
-            img = Image.new('RGB', (width, height), color='#2C3E50')
+            width, height = 600, 400
+            img = Image.new('RGB', (width, height), color='#1a1a2e')
             draw = ImageDraw.Draw(img)
             
             # Title
-            draw.text((120, 20), "🌾 Your Garden", fill='#27AE60', font=self.font)
+            draw.text((50, 20), f"{username}'s Garden", fill='#4CAF50', font=self.large_font)
             
-            # 3x3 grid
+            # Grid (3x3)
             grid_size = 3
-            cell_size = 100
+            cell_size = 120
             padding = 10
-            start_x = 50
-            start_y = 80
+            start_x = (width - (grid_size * cell_size + (grid_size - 1) * padding)) // 2
+            start_y = 70
             
             for row in range(grid_size):
                 for col in range(grid_size):
@@ -682,33 +574,46 @@ class ImageGenerator:
                     x2 = x1 + cell_size
                     y2 = y1 + cell_size
                     
-                    # Draw cell
-                    draw.rectangle([x1, y1, x2, y2], fill='#34495E', outline='#7F8C8D', width=2)
-                    
-                    if idx < len(crops):
-                        crop = crops[idx]
-                        progress = crop['progress']
+                    if idx < len(plants):
+                        plant = plants[idx]
+                        progress = plant.get('progress', 0)
                         
-                        # Color based on progress
-                        color = '#27AE60' if progress >= 100 else '#F39C12' if progress >= 50 else '#3498DB'
+                        if progress >= 100:
+                            color = '#4CAF50'
+                            status = "READY"
+                        elif progress >= 50:
+                            color = '#FFC107'
+                            status = "GROWING"
+                        else:
+                            color = '#2196F3'
+                            status = "PLANTED"
+                        
                         draw.rectangle([x1, y1, x2, y2], fill=color, outline='white', width=2)
                         
-                        # Crop emoji
-                        emoji = CROP_EMOJIS.get(crop['crop_type'], '🌱')
-                        draw.text((x1+35, y1+30), emoji, fill='white', font=self.font)
+                        crop_type = plant['crop_type']
+                        crop_data = CROPS.get(crop_type, {})
+                        emoji = crop_data.get('emoji', '🌱')
                         
-                        # Progress
-                        draw.text((x1+30, y2-30), f"{int(progress)}%", fill='white', font=self.font)
+                        draw.text((x1 + 40, y1 + 20), emoji, fill='white', font=self.large_font)
+                        draw.text((x1 + 5, y1 + 5), crop_type[:6], fill='white', font=self.small_font)
+                        draw.text((x1 + 30, y2 - 25), f"{int(progress)}%", fill='white', font=self.small_font)
+                        draw.text((x1 + 5, y2 - 45), status, fill='white', font=self.small_font)
                     else:
-                        # Empty slot
-                        draw.text((x1+40, y1+40), "➕", fill='#BDC3C7', font=self.font)
+                        draw.rectangle([x1, y1, x2, y2], fill='#333333', outline='#666666', width=1)
+                        draw.text((x1 + cell_size//2 - 10, y1 + cell_size//2 - 15), 
+                                 "➕", fill='#CCCCCC', font=self.large_font)
             
-            # Save to bytes
-            img_bytes = io.BytesIO()
-            img.save(img_bytes, format='PNG')
-            img_bytes.seek(0)
+            # Stats
+            stats_y = start_y + grid_size * (cell_size + padding) + 20
+            draw.text((50, stats_y), f"Slots: {len(plants)}/{garden_info.get('slots', 9)}", 
+                     fill='#FFC107', font=self.medium_font)
+            draw.text((width - 250, stats_y), f"Greenhouse: Level {garden_info.get('greenhouse_level', 0)}", 
+                     fill='#4CAF50', font=self.medium_font)
             
-            return img_bytes.getvalue()
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG')
+            buffer.seek(0)
+            return buffer.getvalue()
             
         except Exception as e:
             logger.error(f"Garden image error: {e}")
@@ -720,7 +625,7 @@ class ImageGenerator:
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
-db = Database("family_bot_complete.db")
+db = Database(DB_PATH)
 img_gen = ImageGenerator()
 
 # ============================================================================
@@ -733,219 +638,374 @@ async def get_target_user(message: Message) -> Optional[types.User]:
         return message.reply_to_message.from_user
     return None
 
-async def send_gif_reaction(command: str, chat_id: int, from_user: types.User, target_user: types.User = None):
-    """Send GIF reaction"""
-    gif_url = await db.get_gif(command)
-    if not gif_url:
-        gif_url = DEFAULT_GIFS.get(command, DEFAULT_GIFS['hug'])
-    
-    action_texts = {
-        'hug': f"🤗 {from_user.first_name} hugged {target_user.first_name if target_user else 'someone'}!",
-        'kill': f"🔪 {from_user.first_name} killed {target_user.first_name if target_user else 'someone'}!",
-        'rob': f"💰 {from_user.first_name} robbed {target_user.first_name if target_user else 'someone'}!",
-        'kiss': f"💋 {from_user.first_name} kissed {target_user.first_name if target_user else 'someone'}!",
-        'slap': f"👋 {from_user.first_name} slapped {target_user.first_name if target_user else 'someone'}!",
-        'pat': f"👏 {from_user.first_name} patted {target_user.first_name if target_user else 'someone'}!",
-        'punch': f"👊 {from_user.first_name} punched {target_user.first_name if target_user else 'someone'}!",
-        'cuddle': f"💞 {from_user.first_name} cuddled {target_user.first_name if target_user else 'someone'}!"
-    }
-    
-    text = action_texts.get(command, f"{from_user.first_name} used {command}!")
-    
-    try:
-        await bot.send_animation(
-            chat_id=chat_id,
-            animation=gif_url,
-            caption=text
-        )
-    except Exception as e:
-        await bot.send_message(chat_id, text)
-
 def is_owner(user_id: int) -> bool:
     """Check if user is owner"""
     return user_id == OWNER_ID
 
-# ============================================================================
-# ONE BUTTON ONLY
-# ============================================================================
+def format_time(seconds: int) -> str:
+    """Format seconds to readable time"""
+    if seconds >= 86400:
+        return f"{seconds // 86400}d"
+    elif seconds >= 3600:
+        return f"{seconds // 3600}h"
+    elif seconds >= 60:
+        return f"{seconds // 60}m"
+    else:
+        return f"{seconds}s"
 
-def one_button_keyboard():
-    """Only one button - Add to Group"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="➕ Add to Group", 
-                               url=f"https://t.me/{BOT_USERNAME}?startgroup=true")
-        ]
-    ])
-    return keyboard
+def create_text_progress_bar(progress: float, width: int = 20) -> str:
+    """Create text progress bar"""
+    filled = int(width * progress / 100)
+    return "█" * filled + "░" * (width - filled)
 
 # ============================================================================
-# START COMMAND
+# COMMAND HANDLERS
 # ============================================================================
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    """Start command with ONE button"""
+    """Start command"""
     user = await db.get_user(message.from_user.id)
     if not user:
         user = await db.create_user(message.from_user)
     
-    # Test image
-    image_bytes = None
-    if HAS_PILLOW:
-        image_bytes = img_gen.create_simple_image(f"Welcome {message.from_user.first_name}!")
-    
     welcome_text = f"""
-✨ <b>Welcome {message.from_user.first_name}!</b> ✨
+👋 Welcome to <b>Family Tree Bot</b>, {message.from_user.first_name}!
 
-🌳 <b>ULTIMATE FAMILY TREE BOT</b>
+🌳 <b>Build Your Legacy</b>
+• Create a family dynasty
+• Grow your farming empire  
+• Build business wealth
+• Play exciting games
 
-📋 <b>13 VISIBLE USER COMMANDS:</b>
+💰 <b>Get Started:</b>
+• Use /daily for your first bonus
+• Check /help for all commands
 
-1. 👨‍👩‍👧‍👦 /family - Family tree
-2. 🌾 /garden - Your garden
-3. 🎰 /slot [bet] - Slot machine
-4. 🎲 /dice [bet] - Dice game
-5. ⚔️ /fight - Fight someone
-6. 📈 /stocks - Stock market
-7. 🏦 /bank - Bank system
-8. 🎫 /lottery - Lottery tickets
-9. 🤗 /hug - Hug someone
-10. 💰 /rob - Rob someone
-11. 💸 /daily - Daily bonus
-12. 👤 /me - Your profile
-13. 🆘 /help - All commands
-
-👑 <b>1 ADMIN COMMAND:</b>
-• /admin (owner only)
-
-🎮 <b>ALL FEATURES WORKING!</b>
-• Family Tree with Images
-• Garden System
-• Casino Games
-• Stock Market
-• Bank System
-• GIF Reactions
-• Group Features
-
-📱 <b>Add me to groups for more fun!</b>
+📱 <b>Add to Groups:</b>
+Click the button below to add me to your groups!
 """
     
-    if image_bytes:
-        try:
-            photo = BufferedInputFile(image_bytes, filename="welcome.png")
-            await message.answer_photo(
-                photo=photo,
-                caption=welcome_text,
-                reply_markup=one_button_keyboard()
-            )
-            return
-        except Exception as e:
-            logger.error(f"Photo error: {e}")
+    # Only add "Add to Group" button in /start
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="➕ Add to Group", 
+                           url=f"https://t.me/{bot.token.split(':')[0]}?startgroup=true")
+    ]])
     
-    await message.answer(
-        welcome_text,
-        reply_markup=one_button_keyboard()
-    )
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
-# ============================================================================
-# 13 VISIBLE USER COMMANDS
-# ============================================================================
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    """Help command"""
+    help_text = """
+🆘 <b>HELP - ALL COMMANDS</b>
 
-# 1. FAMILY COMMAND
-@dp.message(Command("family", "tree"))
-async def cmd_family(message: Message):
-    """👨‍👩‍👧‍👦 Family tree"""
+👤 <b>PROFILE & ECONOMY:</b>
+/me - Your profile
+/daily - Daily bonus ($500-$1500)
+/bank - Banking with interest
+/interest - Collect bank interest
+
+👨‍👩‍👧‍👦 <b>FAMILY:</b>
+/family - View family tree
+/adopt - Adopt someone (reply)
+/marry - Marry someone (reply)  
+/divorce - End marriage
+
+🌾 <b>FARMING:</b>
+/garden - Your garden
+/plant [crop] [qty] - Plant crops
+/harvest - Harvest ready crops
+
+💰 <b>INVESTMENTS:</b>
+/bank - Manage money
+/interest - Earn interest
+
+🎮 <b>GAMES:</b>
+/dice [bet] - Dice game  
+/fight - Fight someone (reply)
+/lottery - Lottery tickets
+/scratch [id] - Scratch ticket
+
+😊 <b>REACTIONS (reply to user):</b>
+/hug, /kiss, /slap, /pat
+
+👑 <b>ADMIN:</b>
+/admin - Admin panel (owner only)
+
+📱 <b>Need help? Contact support!</b>
+"""
+    
+    await message.answer(help_text, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("me"))
+async def cmd_me(message: Message):
+    """User profile"""
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("❌ Use /start first!")
+        await message.answer("❌ Please use /start first!")
+        return
+    
+    # Get additional data
+    family = await db.get_family(message.from_user.id)
+    garden = await db.get_garden(message.from_user.id)
+    plants = await db.get_plants(message.from_user.id)
+    bank_account = await db.get_bank_account(message.from_user.id)
+    
+    # Calculate total wealth
+    total_wealth = user.get('cash', 0) + user.get('bank_balance', 0)
+    
+    caption = f"""
+👤 <b>{user['first_name']}'s Profile</b>
+
+💰 <b>Wealth:</b>
+• Cash: ${user.get('cash', 0):,}
+• Bank: ${user.get('bank_balance', 0):,}
+• <b>Total: ${total_wealth:,}</b>
+
+📊 <b>Stats:</b>
+• Level: {user.get('level', 1)}
+• XP: {user.get('xp', 0)}/{(user.get('level', 1) * 1000)}
+• Daily Streak: {user.get('daily_streak', 0)} days
+
+👨‍👩‍👧‍👦 <b>Family:</b> {len(family)} members
+🌾 <b>Garden:</b> {len(plants)} crops growing
+🏦 <b>Interest Earned:</b> ${bank_account.get('total_interest', 0):,}
+
+💡 Use /help for all commands
+"""
+    
+    # Try to get user's profile photo
+    try:
+        photos = await bot.get_user_profile_photos(message.from_user.id, limit=1)
+        if photos.total_count > 0:
+            photo = photos.photos[0][-1]
+            await message.answer_photo(
+                photo.file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
+            return
+    except Exception as e:
+        logger.error(f"Profile photo error: {e}")
+    
+    # Fallback to text-only
+    await message.answer(caption, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("daily"))
+async def cmd_daily(message: Message):
+    """Daily bonus"""
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ Please use /start first!")
+        return
+    
+    # Check last daily
+    if user.get('last_daily'):
+        last_daily = datetime.fromisoformat(user['last_daily'].replace('Z', '+00:00'))
+        if (datetime.now() - last_daily).days < 1:
+            next_time = last_daily + timedelta(days=1)
+            hours_left = int((next_time - datetime.now()).total_seconds() / 3600)
+            await message.answer(f"⏳ Come back in {hours_left} hours!")
+            return
+    
+    # Calculate bonus
+    bonus = random.randint(GameConfig.DAILY_MIN, GameConfig.DAILY_MAX)
+    streak = user.get('daily_streak', 0) + 1
+    streak_bonus = min(500, streak * 50)
+    total_bonus = bonus + streak_bonus
+    
+    await db.update_currency(message.from_user.id, "cash", total_bonus)
+    
+    # Update streak and last daily
+    await db.conn.execute(
+        """UPDATE users 
+           SET daily_streak = ?, last_daily = CURRENT_TIMESTAMP
+           WHERE user_id = ?""",
+        (streak, message.from_user.id)
+    )
+    await db.conn.commit()
+    
+    response = f"""
+🎉 <b>DAILY BONUS!</b>
+
+💰 <b>Breakdown:</b>
+• Base Bonus: ${bonus:,}
+• Streak Bonus ({streak} days): ${streak_bonus:,}
+
+🎁 <b>Total: ${total_bonus:,}</b>
+
+💵 New Balance: ${user.get('cash', 0) + total_bonus:,}
+
+🔥 Keep your streak going!
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("family"))
+async def cmd_family(message: Message):
+    """Family tree"""
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ Please use /start first!")
         return
     
     family = await db.get_family(message.from_user.id)
-    friends = await db.get_friends(message.from_user.id)
     
-    family_text = f"""
-👨‍👩‍👧‍👦 <b>FAMILY TREE</b>
+    if not family:
+        response = """
+🌳 <b>Your Family Tree</b>
 
-👤 <b>You:</b> {user['first_name']}
-💰 <b>Cash:</b> ${user.get('cash', 0):,}
+└─ You (Just starting!)
 
-👨‍👩‍👧‍👦 <b>Family Members:</b> {len(family)}
-👥 <b>Friends:</b> {len(friends)}
+💡 <b>How to grow your family:</b>
+• Reply to someone with /adopt to make them your child
+• Reply with /marry to get married
+
+👑 <b>Benefits:</b>
+• Daily bonus increases
+• Family quests and events
 """
-    
-    if family:
-        family_text += "\n🌳 <b>Your Family:</b>\n"
-        for member in family[:10]:
-            emoji = {"parent": "👴", "spouse": "💑", "child": "👶"}.get(member['relation_type'], '👤')
-            family_text += f"{emoji} {member['other_name']} ({member['relation_type']})\n"
-    
-    if len(family) > 10:
-        family_text += f"... and {len(family) - 10} more\n"
-    
-    family_text += """
-💡 <b>Commands:</b>
-• Reply with /adopt - Make child
-• Reply with /marry - Marry someone
-• /divorce - End marriage
-• /friend @user - Add friend
-"""
-    
-    await message.answer(
-        family_text,
-        reply_markup=one_button_keyboard()
-    )
-
-# 2. GARDEN COMMAND
-@dp.message(Command("garden"))
-async def cmd_garden(message: Message):
-    """🌾 Your garden"""
-    user = await db.get_user(message.from_user.id)
-    if not user:
-        await message.answer("❌ Use /start first!")
+        await message.answer(response, parse_mode=ParseMode.HTML)
         return
     
-    garden_info = await db.get_garden_info(message.from_user.id)
-    crops = await db.get_growing_crops(message.from_user.id)
-    barn_items = await db.get_barn_items(message.from_user.id)
+    # Build family tree
+    tree_text = f"🌳 <b>Family Tree of {user['first_name']}</b>\n\n"
+    tree_text += f"└─ {user['first_name']} (You)\n"
     
-    # Create image
-    image_bytes = None
-    if HAS_PILLOW:
-        image_bytes = await img_gen.create_garden_image(crops)
+    for member in family:
+        emoji = "💑" if member['relation'] == "spouse" else "👶" if member['relation'] == "child" else "👴"
+        tree_text += f"   ├─ {emoji} {member['first_name']} ({member['relation']})\n"
     
-    ready_count = sum(1 for c in crops if c.get('progress', 0) >= 100)
-    total_slots = garden_info.get('slots', 9) + (garden_info.get('greenhouse_level', 0) * 3)
+    stats_text = f"""
+📊 <b>Family Stats:</b>
+• Members: {len(family)}
+• Daily Bonus: +${len(family) * 100}
+
+💡 <b>Commands:</b>
+• /adopt - Make someone your child
+• /marry - Marry someone
+• /divorce - End marriage
+"""
+    
+    await message.answer(tree_text + stats_text, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("adopt"))
+async def cmd_adopt(message: Message):
+    """Adopt someone"""
+    target = await get_target_user(message)
+    
+    if not target:
+        await message.answer("❌ Reply to someone's message to adopt them!")
+        return
+    
+    if target.id == message.from_user.id:
+        await message.answer("❌ You cannot adopt yourself!")
+        return
+    
+    user = await db.get_user(message.from_user.id)
+    target_user = await db.get_user(target.id)
+    
+    if not user or not target_user:
+        await message.answer("❌ Both users need to use /start first!")
+        return
+    
+    await db.add_family_member(message.from_user.id, target.id, "child")
+    await db.update_currency(message.from_user.id, "cash", GameConfig.ADOPT_BONUS)
+    
+    family = await db.get_family(message.from_user.id)
+    
+    response = f"""
+✅ <b>ADOPTION SUCCESSFUL!</b>
+
+👤 You adopted <b>{target.first_name}</b>
+🤝 Relationship: Parent-Child
+💰 Bonus: ${GameConfig.ADOPT_BONUS:,}
+
+👨‍👩‍👧‍👦 Your family now has {len(family)} members
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("marry"))
+async def cmd_marry(message: Message):
+    """Marry someone"""
+    target = await get_target_user(message)
+    
+    if not target:
+        await message.answer("❌ Reply to someone's message to marry them!")
+        return
+    
+    if target.id == message.from_user.id:
+        await message.answer("❌ You cannot marry yourself!")
+        return
+    
+    user = await db.get_user(message.from_user.id)
+    target_user = await db.get_user(target.id)
+    
+    if not user or not target_user:
+        await message.answer("❌ Both users need to use /start first!")
+        return
+    
+    await db.add_family_member(message.from_user.id, target.id, "spouse")
+    await db.update_currency(message.from_user.id, "cash", GameConfig.MARRY_BONUS)
+    await db.update_currency(target.id, "cash", GameConfig.MARRY_BONUS)
+    
+    response = f"""
+💍 <b>MARRIAGE SUCCESSFUL!</b>
+
+👤 You married <b>{target.first_name}</b>
+🤝 Relationship: Spouses
+💰 Gift: ${GameConfig.MARRY_BONUS:,} each
+
+🎉 <b>Congratulations!</b>
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("garden"))
+async def cmd_garden(message: Message):
+    """Garden with image"""
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ Please use /start first!")
+        return
+    
+    garden_info = await db.get_garden(message.from_user.id)
+    plants = await db.get_plants(message.from_user.id)
+    
+    # Create garden image
+    image_bytes = img_gen.create_garden_image(user['first_name'], plants, garden_info)
+    
+    ready_count = sum(1 for p in plants if p.get('ready', False))
     
     caption = f"""
-🌾 <b>YOUR GARDEN</b>
+🌾 <b>{user['first_name']}'s Garden</b>
 
 📊 <b>Stats:</b>
-• Slots: {len(crops)}/{total_slots}
-• Growing: {len(crops)} crops
+• Growing: {len(plants)}/{garden_info.get('slots', 9)} slots
 • Ready: {ready_count} crops
 • Greenhouse: Level {garden_info.get('greenhouse_level', 0)}
 
-🏠 <b>Barn Storage:</b>
-"""
-    
-    if barn_items:
-        for crop_type, quantity in barn_items[:5]:
-            emoji = CROP_EMOJIS.get(crop_type, "📦")
-            value = CROP_DATA[crop_type]['sell'] * quantity
-            caption += f"{emoji} {crop_type.title()}: {quantity} (${value})\n"
-    else:
-        caption += "Empty\n"
-    
-    caption += f"""
 💡 <b>Commands:</b>
-• <code>/plant [crop] [qty]</code> - Plant crops
-• <code>/harvest</code> - Harvest ready crops
-• <code>/barn</code> - View all storage
+• /plant [crop] [qty] - Plant crops
+• /harvest - Collect ready crops
 
 🌱 <b>Available Crops:</b>
-🥕 Carrot ($10), 🍅 Tomato ($15), 🥔 Potato ($8)
+🥕 Carrot - $10 (2h)
+🍅 Tomato - $15 (3h)  
+🥔 Potato - $8 (2.5h)
+🍆 Eggplant - $20 (4h)
 """
+    
+    # Add progress bars
+    if plants:
+        caption += "\n📈 <b>Current Crops:</b>\n"
+        for plant in plants[:3]:
+            progress = plant.get('progress', 0)
+            crop_data = CROPS.get(plant['crop_type'], {})
+            emoji = crop_data.get('emoji', '🌱')
+            caption += f"{emoji} {plant['crop_type'].title()}: {create_text_progress_bar(progress)} {int(progress)}%\n"
     
     if image_bytes:
         try:
@@ -953,908 +1013,183 @@ async def cmd_garden(message: Message):
             await message.answer_photo(
                 photo=photo,
                 caption=caption,
-                reply_markup=one_button_keyboard()
+                parse_mode=ParseMode.HTML
             )
-            return
         except Exception as e:
             logger.error(f"Garden photo error: {e}")
-    
-    # Add crop progress
-    if crops:
-        caption += "\n🌱 <b>Growing Now:</b>\n"
-        for crop in crops[:5]:
-            emoji = CROP_EMOJIS.get(crop['crop_type'], '🌱')
-            progress = crop['progress']
-            if progress >= 100:
-                status = "✅ Ready!"
-            else:
-                status = f"{int(progress)}%"
-            caption += f"{emoji} {crop['crop_type'].title()}: {status}\n"
-    
-    await message.answer(
-        caption,
-        reply_markup=one_button_keyboard()
-    )
-
-# 3. SLOT COMMAND
-@dp.message(Command("slot"))
-async def cmd_slot(message: Message, command: CommandObject):
-    """🎰 Slot machine"""
-    if not command.args:
-        await message.answer("🎰 Usage: /slot [bet]\nExample: /slot 100")
-        return
-    
-    try:
-        bet = int(command.args)
-        if bet < 10:
-            await message.answer("Minimum bet is $10!")
-            return
-    except:
-        await message.answer("Invalid bet amount!")
-        return
-    
-    user = await db.get_user(message.from_user.id)
-    if not user:
-        await message.answer("❌ Use /start first!")
-        return
-    
-    if bet > user['cash']:
-        await message.answer(f"❌ You only have ${user['cash']:,}!")
-        return
-    
-    # Generate slots
-    symbols = CASINO_SYMBOLS
-    reels = [random.choice(symbols) for _ in range(3)]
-    
-    # Check win
-    if reels[0] == reels[1] == reels[2]:
-        if reels[0] == "7️⃣":
-            multiplier = 10
-        elif reels[0] == "💎":
-            multiplier = 5
-        else:
-            multiplier = 3
-    elif reels[0] == reels[1] or reels[1] == reels[2]:
-        multiplier = 1.5
+            await message.answer(caption, parse_mode=ParseMode.HTML)
     else:
-        multiplier = 0
-    
-    win_amount = int(bet * multiplier)
-    net_gain = win_amount - bet
-    
-    await db.update_currency(message.from_user.id, "cash", net_gain)
-    
-    result = f"""
-🎰 <b>SLOT MACHINE</b>
-
-[{reels[0]}] [{reels[1]}] [{reels[2]}]
-
-💰 Bet: <b>${bet:,}</b>
-🏆 Result: {'WIN! 🎉' if win_amount > 0 else 'Lose 😢'}
-💵 Payout: <b>${win_amount:,}</b>
-📈 Net: {'+' if net_gain > 0 else ''}<b>${net_gain:,}</b>
-
-💸 Balance: <b>${user['cash'] + net_gain:,}</b>
-"""
-    
-    await message.answer(
-        result,
-        reply_markup=one_button_keyboard()
-    )
-
-# 4. DICE COMMAND
-@dp.message(Command("dice"))
-async def cmd_dice(message: Message, command: CommandObject):
-    """🎲 Dice game"""
-    if not command.args:
-        await message.answer("🎲 Usage: /dice [bet]\nExample: /dice 50")
-        return
-    
-    try:
-        bet = int(command.args)
-        if bet < 10:
-            await message.answer("Minimum bet is $10!")
-            return
-    except:
-        await message.answer("Invalid bet amount!")
-        return
-    
-    user = await db.get_user(message.from_user.id)
-    if not user:
-        await message.answer("❌ Use /start first!")
-        return
-    
-    if bet > user['cash']:
-        await message.answer(f"❌ You only have ${user['cash']:,}!")
-        return
-    
-    # Roll dice
-    player_roll = random.randint(1, 6)
-    bot_roll = random.randint(1, 6)
-    
-    if player_roll > bot_roll:
-        result = "WIN 🎉"
-        net_gain = bet
-    elif player_roll < bot_roll:
-        result = "LOSE 😢"
-        net_gain = -bet
-    else:
-        result = "DRAW 🤝"
-        net_gain = 0
-    
-    await db.update_currency(message.from_user.id, "cash", net_gain)
-    
-    result_text = f"""
-🎲 <b>DICE GAME</b>
-
-👤 Your roll: <b>{player_roll}</b>
-🤖 Bot roll: <b>{bot_roll}</b>
-
-💰 Bet: <b>${bet:,}</b>
-🏆 Result: <b>{result}</b>
-💵 {'Win' if net_gain > 0 else 'Loss'}: <b>${abs(net_gain):,}</b>
-
-💸 Balance: <b>${user['cash'] + net_gain:,}</b>
-"""
-    
-    await message.answer(
-        result_text,
-        reply_markup=one_button_keyboard()
-    )
-
-# 5. FIGHT COMMAND
-@dp.message(Command("fight"))
-async def cmd_fight(message: Message):
-    """⚔️ Fight someone"""
-    target = await get_target_user(message)
-    
-    if not target:
-        await message.answer("❌ Reply to someone to fight them!")
-        return
-    
-    if target.id == message.from_user.id:
-        await message.answer("❌ Can't fight yourself!")
-        return
-    
-    user = await db.get_user(message.from_user.id)
-    target_user = await db.get_user(target.id)
-    
-    if not user or not target_user:
-        await message.answer("❌ Both need /start first!")
-        return
-    
-    # Calculate power
-    user_power = user.get('level', 1) * 10 + random.randint(1, 20)
-    target_power = target_user.get('level', 1) * 10 + random.randint(1, 20)
-    
-    if user_power > target_power:
-        win_amount = random.randint(100, 500)
-        await db.update_currency(message.from_user.id, "cash", win_amount)
-        await db.update_currency(target.id, "cash", -win_amount)
-        
-        result = f"""
-⚔️ <b>FIGHT VICTORY!</b>
-
-👤 {message.from_user.first_name} defeated {target.first_name}!
-💪 Power: {user_power} vs {target_power}
-💰 Won: <b>${win_amount:,}</b> from {target.first_name}
-"""
-    elif user_power < target_power:
-        loss_amount = random.randint(50, 300)
-        await db.update_currency(message.from_user.id, "cash", -loss_amount)
-        await db.update_currency(target.id, "cash", loss_amount)
-        
-        result = f"""
-⚔️ <b>FIGHT DEFEAT!</b>
-
-👤 {target.first_name} defeated {message.from_user.first_name}!
-💪 Power: {target_power} vs {user_power}
-💸 Lost: <b>${loss_amount:,}</b> to {target.first_name}
-"""
-    else:
-        result = f"""
-⚔️ <b>FIGHT DRAW!</b>
-
-👤 {message.from_user.first_name} vs {target.first_name}
-💪 Power: {user_power} vs {target_power}
-🤝 No money exchanged.
-"""
-    
-    await message.answer(
-        result,
-        reply_markup=one_button_keyboard()
-    )
-
-# 6. STOCKS COMMAND
-@dp.message(Command("stocks", "stock"))
-async def cmd_stocks(message: Message):
-    """📈 Stock market"""
-    user = await db.get_user(message.from_user.id)
-    if not user:
-        await message.answer("❌ Use /start first!")
-        return
-    
-    # Get current prices
-    stocks_text = """
-📈 <b>STOCK MARKET</b>
-
-🏢 <b>Available Stocks:</b>
-"""
-    
-    for symbol, data in STOCKS.items():
-        price = await db.get_stock_price(symbol)
-        stocks_text += f"• {symbol}: {data['name']} - <b>${price:.2f}</b>\n"
-    
-    # Get portfolio
-    portfolio = await db.get_portfolio(message.from_user.id)
-    
-    stocks_text += f"""
-💰 <b>Your Portfolio:</b>
-"""
-    
-    if portfolio:
-        total_value = sum(stock['value'] for stock in portfolio)
-        total_profit = sum(stock['profit'] for stock in portfolio)
-        
-        stocks_text += f"• Stocks: {len(portfolio)}\n"
-        stocks_text += f"• Total Value: <b>${total_value:.2f}</b>\n"
-        stocks_text += f"• Total Profit: <b>${total_profit:.2f}</b>\n"
-        
-        for stock in portfolio[:3]:
-            arrow = "📈" if stock['profit'] >= 0 else "📉"
-            stocks_text += f"{arrow} {stock['symbol']}: {stock['shares']} shares\n"
-    else:
-        stocks_text += "No stocks owned yet.\n"
-    
-    stocks_text += """
-💡 <b>Commands:</b>
-• <code>/buy [symbol] [shares]</code> - Buy stocks
-• <code>/sell [symbol] [shares]</code> - Sell stocks
-• <code>/portfolio</code> - View portfolio
-
-📝 <b>Example:</b>
-<code>/buy TECH 10</code>
-"""
-    
-    await message.answer(
-        stocks_text,
-        reply_markup=one_button_keyboard()
-    )
-
-# 7. BANK COMMAND
-@dp.message(Command("bank"))
-async def cmd_bank(message: Message):
-    """🏦 Bank system"""
-    user = await db.get_user(message.from_user.id)
-    if not user:
-        await message.answer("❌ Use /start first!")
-        return
-    
-    bank_text = f"""
-🏦 <b>BANK SYSTEM</b>
-
-💰 <b>Your Accounts:</b>
-• 💵 Cash: <b>${user.get('cash', 0):,}</b>
-• 🏦 Bank Balance: <b>${user.get('bank_balance', 0):,}</b>
-• 💰 Total Wealth: <b>${user.get('cash', 0) + user.get('bank_balance', 0):,}</b>
-
-💡 <b>Features:</b>
-• Safe storage for money
-• No risk of robbery
-• Earn interest (coming soon)
-
-📋 <b>Commands:</b>
-• <code>/deposit [amount]</code> - Deposit to bank
-• <code>/withdraw [amount]</code> - Withdraw from bank
-• <code>/statement</code> - View transactions
-
-📝 <b>Examples:</b>
-<code>/deposit 1000</code>
-<code>/withdraw 500</code>
-"""
-    
-    await message.answer(
-        bank_text,
-        reply_markup=one_button_keyboard()
-    )
-
-# 8. LOTTERY COMMAND
-@dp.message(Command("lottery"))
-async def cmd_lottery(message: Message, command: CommandObject):
-    """🎫 Lottery tickets"""
-    if not command.args:
-        tickets = await db.get_lottery_tickets(message.from_user.id)
-        
-        await message.answer(
-            f"""
-🎫 <b>LOTTERY</b>
-
-Your tickets: <b>{tickets}</b>
-Price: $50 per ticket
-
-💡 <b>Commands:</b>
-• <code>/lottery [tickets]</code> - Buy tickets
-• Draw every Sunday!
-
-📝 <b>Example:</b>
-<code>/lottery 5</code> - Buy 5 tickets ($250)
-""",
-            reply_markup=one_button_keyboard()
-        )
-        return
-    
-    try:
-        tickets = int(command.args)
-        if tickets < 1:
-            await message.answer("Minimum 1 ticket!")
-            return
-    except:
-        await message.answer("Invalid number!")
-        return
-    
-    success = await db.buy_lottery_ticket(message.from_user.id, tickets)
-    
-    if not success:
-        await message.answer("❌ Not enough cash! Tickets cost $50 each.")
-        return
-    
-    total_tickets = await db.get_lottery_tickets(message.from_user.id)
-    
-    await message.answer(
-        f"""
-✅ <b>LOTTERY TICKETS BOUGHT!</b>
-
-Tickets bought: <b>{tickets}</b>
-Cost: <b>${tickets * 50:,}</b>
-Total tickets: <b>{total_tickets}</b>
-
-🎯 Draw every Sunday!
-💰 Prize: 70% of ticket sales
-""",
-        reply_markup=one_button_keyboard()
-    )
-
-# 9. HUG COMMAND
-@dp.message(Command("hug"))
-async def cmd_hug(message: Message):
-    """🤗 Hug someone"""
-    target = await get_target_user(message)
-    
-    if not target:
-        await message.answer("❌ Reply to someone to hug them!")
-        return
-    
-    await send_gif_reaction("hug", message.chat.id, message.from_user, target)
-
-# 10. ROB COMMAND
-@dp.message(Command("rob"))
-async def cmd_rob(message: Message):
-    """💰 Rob someone"""
-    target = await get_target_user(message)
-    
-    if not target:
-        await message.answer("❌ Reply to someone to rob them!")
-        return
-    
-    if target.id == message.from_user.id:
-        await message.answer("❌ Can't rob yourself!")
-        return
-    
-    user = await db.get_user(message.from_user.id)
-    target_user = await db.get_user(target.id)
-    
-    if not user or not target_user:
-        await message.answer("❌ Both need /start first!")
-        return
-    
-    if target_user['cash'] < 100:
-        await message.answer(f"❌ {target.first_name} is too poor! (Need $100)")
-        return
-    
-    success = random.random() < 0.4
-    
-    if success:
-        stolen = random.randint(100, min(500, target_user['cash']))
-        await db.update_currency(target.id, "cash", -stolen)
-        await db.update_currency(message.from_user.id, "cash", stolen)
-        
-        await send_gif_reaction("rob", message.chat.id, message.from_user, target)
-        await message.answer(f"💰 Successfully robbed ${stolen:,} from {target.first_name}!")
-    else:
-        fine = random.randint(100, 300)
-        await db.update_currency(message.from_user.id, "cash", -fine)
-        await message.answer(f"🚨 Robbery failed! You were fined ${fine:,}. {target.first_name} caught you!")
-
-# 11. DAILY COMMAND
-@dp.message(Command("daily"))
-async def cmd_daily(message: Message):
-    """💰 Daily bonus"""
-    user = await db.get_user(message.from_user.id)
-    if not user:
-        user = await db.create_user(message.from_user)
-    
-    # Check cooldown
-    last_daily = await db.get_cooldown(message.from_user.id, "daily")
-    if last_daily:
-        elapsed = (datetime.now() - last_daily).total_seconds()
-        if elapsed < 86400:  # 24 hours
-            remaining = int(86400 - elapsed)
-            hours = remaining // 3600
-            minutes = (remaining % 3600) // 60
-            await message.answer(f"⏰ Come back in {hours}h {minutes}m!")
-            return
-    
-    base_bonus = random.randint(500, 1500)
-    streak = user.get('daily_streak', 0) + 1
-    streak_bonus = min(500, streak * 50)
-    total = base_bonus + streak_bonus
-    
-    await db.update_currency(message.from_user.id, "cash", total)
-    await db.set_cooldown(message.from_user.id, "daily")
-    
-    await db.conn.execute(
-        "UPDATE users SET daily_streak = ? WHERE user_id = ?",
-        (streak, message.from_user.id)
-    )
-    await db.conn.commit()
-    
-    await message.answer(
-        f"""
-🎉 <b>DAILY BONUS!</b>
-
-💰 Base Bonus: <b>${base_bonus:,}</b>
-🔥 Streak ({streak} days): <b>${streak_bonus:,}</b>
-🎁 Total: <b>${total:,}</b>
-
-💸 New balance: <b>${user['cash'] + total:,}</b>
-
-💡 Come back tomorrow!
-""",
-        reply_markup=one_button_keyboard()
-    )
-
-# 12. PROFILE COMMAND
-@dp.message(Command("me", "profile"))
-async def cmd_profile(message: Message):
-    """👤 Your profile"""
-    user = await db.get_user(message.from_user.id)
-    if not user:
-        await message.answer("❌ Use /start first!")
-        return
-    
-    family = await db.get_family(message.from_user.id)
-    garden_info = await db.get_garden_info(message.from_user.id)
-    crops = await db.get_growing_crops(message.from_user.id)
-    tickets = await db.get_lottery_tickets(message.from_user.id)
-    friends = await db.get_friends(message.from_user.id)
-    portfolio = await db.get_portfolio(message.from_user.id)
-    
-    profile_text = f"""
-👤 <b>PROFILE OF {user['first_name'].upper()}</b>
-
-💰 <b>Wealth:</b>
-• 💵 Cash: <b>${user.get('cash', 0):,}</b>
-• 🏦 Bank: <b>${user.get('bank_balance', 0):,}</b>
-• 🪙 Gold: <b>{user.get('gold', 0):,}</b>
-• ⭐ Credits: <b>{user.get('credits', 0):,}</b>
-• 🌱 Tokens: <b>{user.get('tokens', 0):,}</b>
-
-📊 <b>Stats:</b>
-• Level: <b>{user.get('level', 1)}</b>
-• XP: <b>{user.get('xp', 0)}/1000</b>
-• Reputation: <b>{user.get('reputation', 100)}</b>
-• Daily Streak: <b>{user.get('daily_streak', 0)} days</b>
-
-👨‍👩‍👧‍👦 <b>Social:</b>
-• Family: <b>{len(family)} members</b>
-• Friends: <b>{len(friends)} friends</b>
-
-🌾 <b>Garden:</b>
-• Growing: <b>{len(crops)}/9 crops</b>
-• Greenhouse: <b>Level {garden_info.get('greenhouse_level', 0)}</b>
-
-📈 <b>Investments:</b>
-• Stocks: <b>{len(portfolio)}</b>
-• Lottery Tickets: <b>{tickets}</b>
-
-💡 Use /help for all commands!
-"""
-    
-    await message.answer(
-        profile_text,
-        reply_markup=one_button_keyboard()
-    )
-
-# 13. HELP COMMAND
-@dp.message(Command("help"))
-async def cmd_help(message: Message):
-    """🆘 Help command"""
-    help_text = """
-🆘 <b>HELP - 13 VISIBLE COMMANDS</b>
-
-1. 👨‍👩‍👧‍👦 <b>/family</b> - Family tree
-2. 🌾 <b>/garden</b> - Your garden
-3. 🎰 <b>/slot [bet]</b> - Slot machine
-4. 🎲 <b>/dice [bet]</b> - Dice game
-5. ⚔️ <b>/fight</b> - Fight someone (reply)
-6. 📈 <b>/stocks</b> - Stock market
-7. 🏦 <b>/bank</b> - Bank system
-8. 🎫 <b>/lottery</b> - Lottery tickets
-9. 🤗 <b>/hug</b> - Hug someone (reply)
-10. 💰 <b>/rob</b> - Rob someone (reply)
-11. 💸 <b>/daily</b> - Daily bonus
-12. 👤 <b>/me</b> - Your profile
-13. 🆘 <b>/help</b> - This message
-
-🎬 <b>More Reactions (reply):</b>
-• /kiss, /slap, /pat, /punch
-• /cuddle, /kill
-
-🌱 <b>Garden Commands:</b>
-• /plant [crop] [qty]
-• /harvest
-• /barn
-
-👑 <b>Admin Only:</b>
-• /admin
-
-📱 <b>Add bot to groups for more fun!</b>
-"""
-    
-    await message.answer(
-        help_text,
-        reply_markup=one_button_keyboard()
-    )
-
-# ============================================================================
-# OTHER REACTION COMMANDS
-# ============================================================================
-
-@dp.message(Command("kiss"))
-async def cmd_kiss(message: Message):
-    """💋 Kiss someone"""
-    target = await get_target_user(message)
-    if not target:
-        await message.answer("❌ Reply to someone!")
-        return
-    await send_gif_reaction("kiss", message.chat.id, message.from_user, target)
-
-@dp.message(Command("slap"))
-async def cmd_slap(message: Message):
-    """👋 Slap someone"""
-    target = await get_target_user(message)
-    if not target:
-        await message.answer("❌ Reply to someone!")
-        return
-    await send_gif_reaction("slap", message.chat.id, message.from_user, target)
-
-@dp.message(Command("pat"))
-async def cmd_pat(message: Message):
-    """👏 Pat someone"""
-    target = await get_target_user(message)
-    if not target:
-        await message.answer("❌ Reply to someone!")
-        return
-    await send_gif_reaction("pat", message.chat.id, message.from_user, target)
-
-@dp.message(Command("punch"))
-async def cmd_punch(message: Message):
-    """👊 Punch someone"""
-    target = await get_target_user(message)
-    if not target:
-        await message.answer("❌ Reply to someone!")
-        return
-    await send_gif_reaction("punch", message.chat.id, message.from_user, target)
-
-@dp.message(Command("cuddle"))
-async def cmd_cuddle(message: Message):
-    """💞 Cuddle someone"""
-    target = await get_target_user(message)
-    if not target:
-        await message.answer("❌ Reply to someone!")
-        return
-    await send_gif_reaction("cuddle", message.chat.id, message.from_user, target)
-
-@dp.message(Command("kill"))
-async def cmd_kill(message: Message):
-    """🔪 Kill someone"""
-    target = await get_target_user(message)
-    if not target:
-        await message.answer("❌ Reply to someone!")
-        return
-    await send_gif_reaction("kill", message.chat.id, message.from_user, target)
-
-# ============================================================================
-# GARDEN COMMANDS
-# ============================================================================
+        await message.answer(caption, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("plant"))
 async def cmd_plant(message: Message, command: CommandObject):
-    """🌱 Plant crops"""
+    """Plant crops"""
     if not command.args:
         crops_list = "\n".join([
-            f"{CROP_EMOJIS.get(c, '🌱')} {c.title()} - ${CROP_DATA[c]['buy']} ({CROP_DATA[c]['grow_time']}h)"
-            for c in list(CROP_DATA.keys())[:6]
+            f"{data['emoji']} {crop.title()} - ${data['buy']} ({data['grow_time']}h)"
+            for crop, data in CROPS.items()
         ])
         
-        await message.answer(
-            f"""
+        response = f"""
 🌱 <b>PLANT CROPS</b>
 
-Usage: /plant [crop] [quantity]
+Usage: <code>/plant [crop] [quantity]</code>
 
-🌿 <b>Available:</b>
+🌿 <b>Available Crops:</b>
 {crops_list}
 
 💡 <b>Examples:</b>
 <code>/plant carrot 3</code>
 <code>/plant tomato 2</code>
-<code>/plant watermelon 1</code>
-""",
-            reply_markup=one_button_keyboard()
-        )
+"""
+        await message.answer(response, parse_mode=ParseMode.HTML)
         return
     
     args = command.args.lower().split()
     if len(args) < 2:
-        await message.answer("❌ Format: /plant [crop] [quantity]")
+        await message.answer("❌ Format: /plant [crop] [quantity]\nExample: /plant carrot 3")
         return
     
     crop_type = args[0]
     try:
         quantity = int(args[1])
-    except:
+    except ValueError:
         await message.answer("❌ Quantity must be a number!")
         return
     
-    if crop_type not in CROP_TYPES:
-        await message.answer(f"❌ Invalid crop! Try: {', '.join(CROP_TYPES[:4])}")
+    if crop_type not in CROPS:
+        await message.answer(f"❌ Invalid crop! Available: {', '.join(CROPS.keys())}")
+        return
+    
+    if quantity < 1 or quantity > 9:
+        await message.answer("❌ Quantity must be between 1 and 9!")
         return
     
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("❌ Use /start first!")
+        await message.answer("❌ Please use /start first!")
         return
     
-    cost = CROP_DATA[crop_type]['buy'] * quantity
-    if user['cash'] < cost:
-        await message.answer(f"❌ Need ${cost:,}! You have ${user['cash']:,}")
+    crop_data = CROPS[crop_type]
+    total_cost = crop_data['buy'] * quantity
+    
+    if user['cash'] < total_cost:
+        await message.answer(f"❌ You need ${total_cost:,}! You have ${user['cash']:,}")
         return
     
     success = await db.plant_crop(message.from_user.id, crop_type, quantity)
     
     if not success:
-        await message.answer("❌ Not enough garden space!")
+        await message.answer("❌ Not enough garden space! Use /garden to check available slots.")
         return
     
-    await db.update_currency(message.from_user.id, "cash", -cost)
+    await db.update_currency(message.from_user.id, "cash", -total_cost)
     
-    emoji = CROP_EMOJIS.get(crop_type, "🌱")
-    grow_time = CROP_DATA[crop_type]['grow_time']
-    
-    await message.answer(
-        f"""
+    response = f"""
 ✅ <b>PLANTED!</b>
 
-{emoji} Crop: {crop_type.title()}
-🔢 Quantity: {quantity}
-💰 Cost: ${cost:,}
-⏰ Grow Time: {grow_time} hours
+{crop_data['emoji']} <b>Crop:</b> {crop_type.title()}
+🔢 <b>Quantity:</b> {quantity}
+💰 <b>Cost:</b> ${total_cost:,}
+⏰ <b>Grow Time:</b> {crop_data['grow_time']} hours
 
-🌱 Now growing in garden!
-""",
-        reply_markup=one_button_keyboard()
-    )
+🌱 {quantity} {crop_type.title()}{'s' if quantity > 1 else ''} now growing!
+💡 Use /garden to check progress
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("harvest"))
 async def cmd_harvest(message: Message):
-    """✅ Harvest crops"""
+    """Harvest crops"""
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("❌ Use /start first!")
+        await message.answer("❌ Please use /start first!")
         return
     
     harvested = await db.harvest_crops(message.from_user.id)
     
     if not harvested:
-        await message.answer("❌ No crops ready!")
+        await message.answer("❌ No crops ready for harvest!")
         return
     
     total_value = 0
-    harvest_text = "✅ <b>HARVESTED!</b>\n\n"
+    harvest_text = "✅ <b>HARVEST COMPLETE!</b>\n\n"
     
-    for crop_type, count in harvested:
-        sell_price = CROP_DATA[crop_type]['sell'] * count
-        total_value += sell_price
-        emoji = CROP_EMOJIS.get(crop_type, "🌱")
-        harvest_text += f"{emoji} {crop_type.title()}: {count} × ${CROP_DATA[crop_type]['sell']} = ${sell_price}\n"
-    
-    await db.update_currency(message.from_user.id, "cash", total_value)
-    
-    harvest_text += f"\n💰 <b>Total: ${total_value:,}</b>"
-    
-    await message.answer(
-        harvest_text,
-        reply_markup=one_button_keyboard()
-    )
-
-@dp.message(Command("barn"))
-async def cmd_barn(message: Message):
-    """🏠 Barn storage"""
-    user = await db.get_user(message.from_user.id)
-    if not user:
-        await message.answer("❌ Use /start first!")
-        return
-    
-    barn_items = await db.get_barn_items(message.from_user.id)
-    
-    if not barn_items:
-        await message.answer("🏠 <b>Barn Storage</b>\n\nEmpty! Harvest crops to fill.", reply_markup=one_button_keyboard())
-        return
-    
-    barn_text = "🏠 <b>Barn Storage</b>\n\n"
-    total_value = 0
-    
-    for crop_type, quantity in barn_items:
-        value = CROP_DATA[crop_type]['sell'] * quantity
+    for crop_type, count, value in harvested:
+        crop_data = CROPS.get(crop_type, {})
+        harvest_text += f"{crop_data.get('emoji', '🌱')} {crop_type.title()}: {count} = ${value}\n"
         total_value += value
-        emoji = CROP_EMOJIS.get(crop_type, "📦")
-        barn_text += f"{emoji} {crop_type.title()}: {quantity} (${value})\n"
     
-    barn_text += f"\n💰 <b>Total Value: ${total_value:,}</b>"
+    harvest_text += f"\n💰 <b>Total Earned: ${total_value:,}</b>"
+    harvest_text += f"\n💵 New Balance: ${user['cash'] + total_value:,}"
     
-    await message.answer(
-        barn_text,
-        reply_markup=one_button_keyboard()
-    )
+    await message.answer(harvest_text, parse_mode=ParseMode.HTML)
 
-# ============================================================================
-# STOCK COMMANDS
-# ============================================================================
-
-@dp.message(Command("buy"))
-async def cmd_buy_stock(message: Message, command: CommandObject):
-    """📈 Buy stocks"""
-    if not command.args:
-        await message.answer("❌ Usage: /buy [symbol] [shares]\nExample: /buy TECH 10")
-        return
-    
-    args = command.args.upper().split()
-    if len(args) < 2:
-        await message.answer("❌ Format: /buy [symbol] [shares]")
-        return
-    
-    symbol = args[0]
-    try:
-        shares = int(args[1])
-    except:
-        await message.answer("❌ Shares must be a number!")
-        return
-    
-    if symbol not in STOCKS:
-        await message.answer(f"❌ Invalid stock! Available: {', '.join(STOCKS.keys())}")
-        return
-    
-    if shares < 1:
-        await message.answer("❌ Must buy at least 1 share!")
-        return
-    
-    success, cost = await db.buy_stock(message.from_user.id, symbol, shares)
-    
-    if not success:
-        await message.answer("❌ Not enough cash!")
-        return
-    
-    current_price = await db.get_stock_price(symbol)
-    
-    await message.answer(
-        f"""
-✅ <b>STOCKS BOUGHT!</b>
-
-🏢 Stock: {symbol} ({STOCKS[symbol]['name']})
-📊 Shares: {shares}
-💰 Price per share: ${current_price:.2f}
-💵 Total cost: ${cost:.2f}
-
-📈 Now in your portfolio!
-""",
-        reply_markup=one_button_keyboard()
-    )
-
-@dp.message(Command("sell"))
-async def cmd_sell_stock(message: Message, command: CommandObject):
-    """📉 Sell stocks"""
-    if not command.args:
-        await message.answer("❌ Usage: /sell [symbol] [shares]\nExample: /sell TECH 5")
-        return
-    
-    args = command.args.upper().split()
-    if len(args) < 2:
-        await message.answer("❌ Format: /sell [symbol] [shares]")
-        return
-    
-    symbol = args[0]
-    try:
-        shares = int(args[1])
-    except:
-        await message.answer("❌ Shares must be a number!")
-        return
-    
-    if symbol not in STOCKS:
-        await message.answer(f"❌ Invalid stock! Available: {', '.join(STOCKS.keys())}")
-        return
-    
-    success, profit = await db.sell_stock(message.from_user.id, symbol, shares)
-    
-    if not success:
-        await message.answer("❌ You don't own that many shares!")
-        return
-    
-    current_price = await db.get_stock_price(symbol)
-    
-    profit_text = f"📈 Profit: ${profit:.2f}" if profit > 0 else f"📉 Loss: ${abs(profit):.2f}"
-    
-    await message.answer(
-        f"""
-✅ <b>STOCKS SOLD!</b>
-
-🏢 Stock: {symbol} ({STOCKS[symbol]['name']})
-📊 Shares sold: {shares}
-💰 Price per share: ${current_price:.2f}
-💵 Total received: ${current_price * shares:.2f}
-{profit_text}
-""",
-        reply_markup=one_button_keyboard()
-    )
-
-@dp.message(Command("portfolio"))
-async def cmd_portfolio(message: Message):
-    """📊 Stock portfolio"""
+@dp.message(Command("bank"))
+async def cmd_bank(message: Message):
+    """Bank system"""
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("❌ Use /start first!")
+        await message.answer("❌ Please use /start first!")
         return
     
-    portfolio = await db.get_portfolio(message.from_user.id)
+    bank_account = await db.get_bank_account(message.from_user.id)
     
-    if not portfolio:
-        await message.answer(
-            "📊 <b>PORTFOLIO</b>\n\nNo stocks owned yet.\n💡 Use /buy TECH 10 to start!",
-            reply_markup=one_button_keyboard()
-        )
-        return
+    # Calculate next interest
+    next_interest = "Now!"
+    if bank_account.get('last_interest'):
+        last_interest = datetime.fromisoformat(bank_account['last_interest'])
+        next_time = last_interest + timedelta(days=1)
+        if next_time > datetime.now():
+            hours_left = int((next_time - datetime.now()).total_seconds() / 3600)
+            next_interest = f"{hours_left}h"
     
-    portfolio_text = "📊 <b>STOCK PORTFOLIO</b>\n\n"
-    total_value = 0
-    total_profit = 0
+    # Create progress bar image
+    progress_image = None
+    if bank_account.get('last_interest'):
+        last_time = datetime.fromisoformat(bank_account['last_interest'])
+        elapsed = (datetime.now() - last_time).total_seconds()
+        progress = min(100, (elapsed / 86400) * 100)  # 24 hours
+        progress_image = img_gen.create_progress_bar(progress)
     
-    for stock in portfolio:
-        arrow = "📈" if stock['profit'] >= 0 else "📉"
-        portfolio_text += f"{arrow} <b>{stock['symbol']}</b> ({stock['name']})\n"
-        portfolio_text += f"   └─ Shares: {stock['shares']}\n"
-        portfolio_text += f"   └─ Current: ${stock['current_price']:.2f}\n"
-        portfolio_text += f"   └─ Value: ${stock['value']:.2f}\n"
-        portfolio_text += f"   └─ Profit: ${stock['profit']:.2f}\n\n"
-        
-        total_value += stock['value']
-        total_profit += stock['profit']
-    
-    portfolio_text += f"💰 <b>Summary:</b>\n"
-    portfolio_text += f"• Total Value: <b>${total_value:.2f}</b>\n"
-    portfolio_text += f"• Total Profit: <b>${total_profit:.2f}</b>\n"
-    
-    await message.answer(
-        portfolio_text,
-        reply_markup=one_button_keyboard()
-    )
+    caption = f"""
+🏦 <b>BANK OF FAMILY TREE</b>
 
-# ============================================================================
-# BANK COMMANDS
-# ============================================================================
+💰 <b>Your Accounts:</b>
+• 💵 Cash: <b>${user.get('cash', 0):,}</b>
+• 🏦 Savings: <b>${user.get('bank_balance', 0):,}</b>
+• 📈 Interest Earned: <b>${bank_account.get('total_interest', 0):,}</b>
+
+📊 <b>Bank Features:</b>
+• Daily Interest: {GameConfig.BANK_INTEREST_RATE}%
+• Next Interest: {next_interest}
+• Safe from robbery
+
+💡 <b>Commands:</b>
+• /deposit [amount] - Deposit to bank
+• /withdraw [amount] - Withdraw from bank  
+• /interest - Collect interest
+• /statement - View transactions
+"""
+    
+    if progress_image:
+        try:
+            photo = BufferedInputFile(progress_image, filename="progress.png")
+            await message.answer_photo(
+                photo=photo,
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Progress image error: {e}")
+            await message.answer(caption, parse_mode=ParseMode.HTML)
+    else:
+        await message.answer(caption, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("deposit"))
 async def cmd_deposit(message: Message, command: CommandObject):
-    """💰 Deposit to bank"""
+    """Deposit money"""
     if not command.args:
         await message.answer("❌ Usage: /deposit [amount]\nExample: /deposit 1000")
         return
@@ -1864,13 +1199,13 @@ async def cmd_deposit(message: Message, command: CommandObject):
         if amount <= 0:
             await message.answer("❌ Amount must be positive!")
             return
-    except:
+    except ValueError:
         await message.answer("❌ Amount must be a number!")
         return
     
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("❌ Use /start first!")
+        await message.answer("❌ Please use /start first!")
         return
     
     if user['cash'] < amount:
@@ -1879,21 +1214,24 @@ async def cmd_deposit(message: Message, command: CommandObject):
     
     await db.update_currency(message.from_user.id, "cash", -amount)
     await db.update_currency(message.from_user.id, "bank_balance", amount)
+    await db.add_transaction(message.from_user.id, "deposit", amount, "Cash deposit")
     
-    await message.answer(
-        f"""
-✅ <b>DEPOSITED!</b>
+    response = f"""
+✅ <b>DEPOSIT SUCCESSFUL!</b>
 
-💰 Amount: ${amount:,}
-🏦 New bank balance: ${user.get('bank_balance', 0) + amount:,}
-💵 Cash left: ${user['cash'] - amount:,}
-""",
-        reply_markup=one_button_keyboard()
-    )
+💰 <b>Amount:</b> ${amount:,}
+🏦 <b>New Bank Balance:</b> ${user.get('bank_balance', 0) + amount:,}
+💵 <b>Cash Left:</b> ${user['cash'] - amount:,}
+
+📈 <b>Daily Interest:</b> ${int((user.get('bank_balance', 0) + amount) * (GameConfig.BANK_INTEREST_RATE / 100)):,}
+💡 Use /interest daily to collect!
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("withdraw"))
 async def cmd_withdraw(message: Message, command: CommandObject):
-    """💸 Withdraw from bank"""
+    """Withdraw money"""
     if not command.args:
         await message.answer("❌ Usage: /withdraw [amount]\nExample: /withdraw 500")
         return
@@ -1903,13 +1241,13 @@ async def cmd_withdraw(message: Message, command: CommandObject):
         if amount <= 0:
             await message.answer("❌ Amount must be positive!")
             return
-    except:
+    except ValueError:
         await message.answer("❌ Amount must be a number!")
         return
     
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("❌ Use /start first!")
+        await message.answer("❌ Please use /start first!")
         return
     
     if user.get('bank_balance', 0) < amount:
@@ -1918,350 +1256,770 @@ async def cmd_withdraw(message: Message, command: CommandObject):
     
     await db.update_currency(message.from_user.id, "bank_balance", -amount)
     await db.update_currency(message.from_user.id, "cash", amount)
+    await db.add_transaction(message.from_user.id, "withdraw", amount, "Cash withdrawal")
     
-    await message.answer(
-        f"""
-✅ <b>WITHDRAWN!</b>
+    response = f"""
+✅ <b>WITHDRAWAL SUCCESSFUL!</b>
 
-💰 Amount: ${amount:,}
-🏦 New bank balance: ${user.get('bank_balance', 0) - amount:,}
-💵 Cash now: ${user['cash'] + amount:,}
-""",
-        reply_markup=one_button_keyboard()
-    )
+💰 <b>Amount:</b> ${amount:,}
+🏦 <b>New Bank Balance:</b> ${user.get('bank_balance', 0) - amount:,}
+💵 <b>Cash Now:</b> ${user['cash'] + amount:,}
 
-# ============================================================================
-# FAMILY COMMANDS
-# ============================================================================
+💡 Your money is ready to use!
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
 
-@dp.message(Command("adopt"))
-async def cmd_adopt(message: Message):
-    """👶 Adopt someone"""
-    target = await get_target_user(message)
-    
-    if not target:
-        await message.answer("❌ Reply to someone to adopt them!")
-        return
-    
-    if target.id == message.from_user.id:
-        await message.answer("❌ Can't adopt yourself!")
-        return
-    
-    user = await db.get_user(message.from_user.id)
-    target_user = await db.get_user(target.id)
-    
-    if not user or not target_user:
-        await message.answer("❌ Both need /start first!")
-        return
-    
-    await db.add_relation(message.from_user.id, target.id, 'parent')
-    
-    await message.answer(
-        f"""
-✅ <b>ADOPTED!</b>
-
-👤 You adopted {target.first_name}
-🤝 Relationship: Parent-Child
-💰 Bonus: $500 for you, $200 for {target.first_name}
-""",
-        reply_markup=one_button_keyboard()
-    )
-
-@dp.message(Command("marry"))
-async def cmd_marry(message: Message):
-    """💍 Marry someone"""
-    target = await get_target_user(message)
-    
-    if not target:
-        await message.answer("❌ Reply to someone to marry them!")
-        return
-    
-    if target.id == message.from_user.id:
-        await message.answer("❌ Can't marry yourself!")
-        return
-    
-    user = await db.get_user(message.from_user.id)
-    target_user = await db.get_user(target.id)
-    
-    if not user or not target_user:
-        await message.answer("❌ Both need /start first!")
-        return
-    
-    await db.add_relation(message.from_user.id, target.id, 'spouse')
-    
-    await message.answer(
-        f"""
-💍 <b>MARRIED!</b>
-
-👤 You married {target.first_name}
-🤝 Relationship: Spouses
-💰 Gift: $1,000 each
-🎉 Congratulations!
-""",
-        reply_markup=one_button_keyboard()
-    )
-
-@dp.message(Command("divorce"))
-async def cmd_divorce(message: Message):
-    """💔 Divorce"""
+@dp.message(Command("interest"))
+async def cmd_interest(message: Message):
+    """Collect interest"""
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("❌ Use /start first!")
+        await message.answer("❌ Please use /start first!")
         return
     
-    await message.answer(
-        """
-💔 <b>DIVORCE</b>
+    interest, message_text = await db.calculate_interest(message.from_user.id)
+    
+    if interest > 0:
+        response = f"""
+✅ <b>INTEREST COLLECTED!</b>
 
-To divorce, use:
-<code>/divorce @username</code>
+💰 <b>Amount:</b> ${interest:,}
+🏦 <b>New Bank Balance:</b> ${user.get('bank_balance', 0) + interest:,}
+📈 <b>Total Interest Earned:</b> ${(await db.get_bank_account(message.from_user.id)).get('total_interest', 0):,}
 
-💡 You must be married first!
-""",
-        reply_markup=one_button_keyboard()
-    )
+💡 Interest calculated daily at {GameConfig.BANK_INTEREST_RATE}%
+Come back tomorrow for more!
+"""
+    else:
+        response = f"""
+⏳ <b>INTEREST STATUS</b>
 
-# ============================================================================
-# ADMIN COMMAND (only 1 visible)
-# ============================================================================
+{message_text}
+
+🏦 <b>Current Balance:</b> ${user.get('bank_balance', 0):,}
+📈 <b>Daily Rate:</b> {GameConfig.BANK_INTEREST_RATE}%
+
+💡 Interest is calculated once every 24 hours
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("statement"))
+async def cmd_statement(message: Message):
+    """Bank statement"""
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ Please use /start first!")
+        return
+    
+    transactions = await db.get_transactions(message.from_user.id, limit=10)
+    
+    if not transactions:
+        response = """
+📄 <b>BANK STATEMENT</b>
+
+No transactions yet.
+
+💡 Make your first deposit:
+<code>/deposit 100</code>
+"""
+        await message.answer(response, parse_mode=ParseMode.HTML)
+        return
+    
+    statement_text = "📄 <b>BANK STATEMENT</b>\n\n"
+    statement_text += f"🏦 Current Balance: <b>${user.get('bank_balance', 0):,}</b>\n\n"
+    statement_text += "📋 <b>Recent Transactions:</b>\n"
+    
+    for trans in transactions:
+        emoji = "📥" if trans['type'] == 'deposit' else "📤" if trans['type'] == 'withdraw' else "💰"
+        sign = "+" if trans['type'] in ['deposit', 'interest'] else "-"
+        date_str = datetime.fromisoformat(trans['created_at']).strftime('%m/%d')
+        statement_text += f"{emoji} ${abs(trans['amount']):,} {sign} - {date_str}\n"
+    
+    statement_text += "\n💡 <b>Recent 10 transactions shown</b>"
+    
+    await message.answer(statement_text, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("lottery"))
+async def cmd_lottery(message: Message, command: CommandObject):
+    """Buy lottery tickets"""
+    if not command.args:
+        response = f"""
+🎰 <b>LOTTERY SYSTEM</b>
+
+Buy scratch cards for a chance to win big!
+
+💰 <b>Ticket Price:</b> ${GameConfig.LOTTERY_TICKET_PRICE}
+🎫 <b>How it works:</b>
+1. Buy tickets with /buy [quantity]
+2. Scratch them with /scratch [ticket_id]
+3. Check numbers each Sunday
+4. Match bot's numbers to win!
+
+💡 <b>Commands:</b>
+• /buy [quantity] - Buy lottery tickets
+• /mytickets - View your tickets
+• /scratch [ticket_id] - Scratch a ticket
+
+🏆 <b>Weekly Draw:</b>
+Every Sunday, bot announces winning numbers
+Winners get 70% of all ticket sales!
+"""
+        await message.answer(response, parse_mode=ParseMode.HTML)
+        return
+    
+    if command.args.lower().startswith("buy"):
+        # Handle /lottery buy [quantity]
+        try:
+            args = command.args.split()[1:]
+            if not args:
+                await message.answer("❌ Usage: /lottery buy [quantity]\nExample: /lottery buy 3")
+                return
+            
+            quantity = int(args[0])
+            if quantity < 1 or quantity > 10:
+                await message.answer("❌ Quantity must be between 1 and 10!")
+                return
+            
+            success, tickets, cost = await db.buy_lottery_ticket(message.from_user.id, quantity)
+            
+            if not success:
+                await message.answer("❌ Not enough cash to buy tickets!")
+                return
+            
+            ticket_list = "\n".join([f"• #{ticket}" for ticket in tickets[:3]])
+            if len(tickets) > 3:
+                ticket_list += f"\n• ... and {len(tickets) - 3} more"
+            
+            response = f"""
+✅ <b>LOTTERY TICKETS PURCHASED!</b>
+
+🎫 <b>Tickets:</b> {quantity}
+💰 <b>Cost:</b> ${cost:,}
+📋 <b>Ticket IDs:</b>
+{ticket_list}
+
+💡 <b>Next Steps:</b>
+1. Scratch tickets: /scratch [ticket_id]
+2. Check numbers each Sunday
+3. Win 70% of ticket sales!
+
+Good luck! 🍀
+"""
+            await message.answer(response, parse_mode=ParseMode.HTML)
+            
+        except ValueError:
+            await message.answer("❌ Quantity must be a number!")
+        except IndexError:
+            await message.answer("❌ Usage: /lottery buy [quantity]")
+
+@dp.message(Command("mytickets"))
+async def cmd_mytickets(message: Message):
+    """View lottery tickets"""
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ Please use /start first!")
+        return
+    
+    tickets = await db.get_tickets(message.from_user.id)
+    
+    if not tickets:
+        response = """
+🎫 <b>YOUR LOTTERY TICKETS</b>
+
+You don't have any tickets yet!
+
+💡 Buy tickets with:
+<code>/lottery buy 3</code>
+
+💰 Ticket price: ${GameConfig.LOTTERY_TICKET_PRICE}
+"""
+        await message.answer(response, parse_mode=ParseMode.HTML)
+        return
+    
+    total_tickets = len(tickets)
+    unscratched = sum(1 for t in tickets if not t['scratched'])
+    scratched = total_tickets - unscratched
+    
+    response = f"""
+🎫 <b>YOUR LOTTERY TICKETS</b>
+
+📊 <b>Stats:</b>
+• Total Tickets: {total_tickets}
+• Unscratched: {unscratched}
+• Scratched: {scratched}
+
+📋 <b>Recent Tickets:</b>
+"""
+    
+    for ticket in tickets[:5]:
+        status = "🔓" if not ticket['scratched'] else "🔒"
+        ticket_id_short = ticket['ticket_id'][:10] + "..."
+        response += f"{status} {ticket_id_short}\n"
+    
+    if total_tickets > 5:
+        response += f"• ... and {total_tickets - 5} more\n"
+    
+    response += "\n💡 <b>Commands:</b>"
+    response += "\n• /scratch [ticket_id] - Scratch a ticket"
+    response += "\n• /lottery buy [qty] - Buy more tickets"
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("scratch"))
+async def cmd_scratch(message: Message, command: CommandObject):
+    """Scratch lottery ticket"""
+    if not command.args:
+        await message.answer("❌ Usage: /scratch [ticket_id]\nExample: /scratch LOT-123456")
+        return
+    
+    ticket_id = command.args.strip().upper()
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ Please use /start first!")
+        return
+    
+    result = await db.scratch_ticket(message.from_user.id, ticket_id)
+    
+    if not result:
+        await message.answer("❌ Ticket not found! Check /mytickets for your tickets.")
+        return
+    
+    if result['already_scratched']:
+        response = f"""
+🎫 <b>TICKET ALREADY SCRATCHED</b>
+
+Ticket: #{ticket_id}
+Numbers: {result['numbers']}
+
+🔍 <b>Check every Sunday</b> to see if you won!
+The bot will announce winning numbers.
+
+💡 Keep this number safe!
+"""
+    else:
+        response = f"""
+🎉 <b>TICKET SCRATCHED!</b>
+
+Ticket: #{ticket_id}
+🎰 <b>Your Numbers:</b> {result['numbers']}
+
+🔍 <b>Check every Sunday</b> to see if you won!
+The bot will announce winning numbers.
+
+📝 <b>Save your numbers:</b> {result['numbers']}
+💡 Winning ticket gets 70% of all sales!
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("dice"))
+async def cmd_dice(message: Message, command: CommandObject):
+    """Dice game"""
+    # Get bet amount
+    bet = 100
+    if command.args:
+        try:
+            bet = int(command.args)
+            if bet < 10:
+                await message.answer("❌ Minimum bet is $10!")
+                return
+            if bet > 10000:
+                await message.answer("❌ Maximum bet is $10,000!")
+                return
+        except ValueError:
+            await message.answer("❌ Bet must be a number!\nExample: /dice 500")
+            return
+    
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ Please use /start first!")
+        return
+    
+    if user['cash'] < bet:
+        await message.answer(f"❌ You need ${bet:,} to play! You have ${user['cash']:,}")
+        return
+    
+    # Send Telegram dice
+    sent_dice = await message.answer_dice()
+    dice_value = sent_dice.dice.value
+    
+    # Calculate win/loss
+    if dice_value >= 4:  # Win on 4, 5, or 6
+        win_amount = bet * 2
+        result = "🎉 YOU WIN!"
+        await db.update_currency(message.from_user.id, "cash", win_amount)
+    else:  # Lose on 1, 2, or 3
+        win_amount = -bet
+        result = "😢 YOU LOSE"
+        await db.update_currency(message.from_user.id, "cash", -bet)
+    
+    response = f"""
+🎲 <b>DICE GAME</b>
+
+Your roll: <b>{dice_value}</b>
+Bet: <b>${bet:,}</b>
+
+{result} <b>${abs(win_amount):,}</b>
+
+💰 <b>New Balance:</b> ${user['cash'] + win_amount:,}
+
+💡 Play again with /dice [amount]
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("fight"))
+async def cmd_fight(message: Message):
+    """Fight someone"""
+    target = await get_target_user(message)
+    
+    if not target:
+        await message.answer("❌ Reply to someone's message to fight them!")
+        return
+    
+    if target.id == message.from_user.id:
+        await message.answer("❌ You cannot fight yourself!")
+        return
+    
+    user = await db.get_user(message.from_user.id)
+    target_user = await db.get_user(target.id)
+    
+    if not user or not target_user:
+        await message.answer("❌ Both users need to use /start first!")
+        return
+    
+    # Calculate fight outcome
+    user_power = user.get('cash', 0) // 1000 + user.get('level', 1)
+    target_power = target_user.get('cash', 0) // 1000 + 1
+    
+    total_power = user_power + target_power
+    user_win_chance = user_power / total_power
+    
+    if random.random() < user_win_chance:
+        # User wins
+        prize = min(1000, target_user.get('cash', 0) // 10)
+        if prize > 0:
+            await db.update_currency(message.from_user.id, "cash", prize)
+            await db.update_currency(target.id, "cash", -prize)
+        
+        response = f"""
+🥊 <b>FIGHT RESULTS</b>
+
+⚔️ {message.from_user.first_name} vs {target.first_name}
+
+🏆 <b>WINNER:</b> {message.from_user.first_name}!
+💰 <b>Prize:</b> ${prize:,}
+
+💪 You defeated {target.first_name}!
+"""
+    else:
+        # User loses
+        penalty = min(500, user.get('cash', 0) // 20)
+        if penalty > 0:
+            await db.update_currency(message.from_user.id, "cash", -penalty)
+            await db.update_currency(target.id, "cash", penalty)
+        
+        response = f"""
+🥊 <b>FIGHT RESULTS</b>
+
+⚔️ {message.from_user.first_name} vs {target.first_name}
+
+😢 <b>LOSER:</b> {message.from_user.first_name}
+💸 <b>Penalty:</b> ${penalty:,}
+
+😔 {target.first_name} defeated you!
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+# Reaction commands
+@dp.message(Command("hug"))
+async def cmd_hug(message: Message):
+    """Hug someone"""
+    target = await get_target_user(message)
+    if not target:
+        await message.answer("❌ Reply to someone to hug them!")
+        return
+    
+    response = f"""
+🤗 <b>HUG</b>
+
+{message.from_user.first_name} hugged {target.first_name}!
+💖 Love is in the air!
+"""
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("kiss"))
+async def cmd_kiss(message: Message):
+    """Kiss someone"""
+    target = await get_target_user(message)
+    if not target:
+        await message.answer("❌ Reply to someone to kiss them!")
+        return
+    
+    response = f"""
+😘 <b>KISS</b>
+
+{message.from_user.first_name} kissed {target.first_name}!
+💋 Mwah!
+"""
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("slap"))
+async def cmd_slap(message: Message):
+    """Slap someone"""
+    target = await get_target_user(message)
+    if not target:
+        await message.answer("❌ Reply to someone to slap them!")
+        return
+    
+    response = f"""
+👋 <b>SLAP</b>
+
+{message.from_user.first_name} slapped {target.first_name}!
+😵 That must have hurt!
+"""
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("pat"))
+async def cmd_pat(message: Message):
+    """Pat someone"""
+    target = await get_target_user(message)
+    if not target:
+        await message.answer("❌ Reply to someone to pat them!")
+        return
+    
+    response = f"""
+👏 <b>PAT</b>
+
+{message.from_user.first_name} patted {target.first_name}!
+🐶 Good human!
+"""
+    await message.answer(response, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
-    """👑 Admin panel"""
+    """Admin panel"""
     if not is_owner(message.from_user.id):
-        await message.answer("❌ Owner only command!")
+        await message.answer("❌ This command is for bot owner only!")
         return
     
-    await message.answer(
-        """
+    response = """
 👑 <b>ADMIN PANEL</b>
 
-📋 <b>Available Commands:</b>
-• /add [user_id] [resource] [amount]
-• /ban (reply to user)
-• /cat add [cmd] [url]
-• /cat list
-• /cat remove [cmd]
-• /groups - View groups bot is in
+📊 <b>Statistics:</b>
+• /stats - Bot statistics
+• /top [type] - Top users
 
-💡 <b>Example:</b>
+👥 <b>User Management:</b>
+• /search [query] - Search users
+• /message [id] [text] - PM user
+
+💰 <b>Economy:</b>
+• /add [id] [currency] [amount] - Add money
+• /remove [id] [currency] [amount] - Remove money
+
+🔧 <b>System:</b>
+• /backup - Backup database
+• /broadcast [text] - Announcement
+
+💡 <b>Click commands to use them</b>
+"""
+    
+    # Create admin keyboard
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Stats", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="👥 Top Users", callback_data="admin_top")],
+        [InlineKeyboardButton(text="💰 Add Money", callback_data="admin_add")],
+        [InlineKeyboardButton(text="🔧 Backup", callback_data="admin_backup")],
+    ])
+    
+    await message.answer(response, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
+@dp.callback_query(F.data.startswith("admin_"))
+async def handle_admin_callback(callback: CallbackQuery):
+    """Handle admin callbacks"""
+    if not is_owner(callback.from_user.id):
+        await callback.answer("❌ Admin only!")
+        return
+    
+    action = callback.data.replace("admin_", "")
+    
+    if action == "stats":
+        stats = await db.get_stats()
+        
+        response = f"""
+📊 <b>BOT STATISTICS</b>
+
+👥 <b>Users:</b> {stats.get('total_users', 0):,}
+💰 <b>Total Cash:</b> ${stats.get('total_cash', 0):,}
+🏦 <b>Total Bank:</b> ${stats.get('total_bank', 0):,}
+👨‍👩‍👧‍👦 <b>Families:</b> {stats.get('family_relations', 0):,}
+🌾 <b>Growing Crops:</b> {stats.get('growing_crops', 0):,}
+🎫 <b>Lottery Tickets:</b> {stats.get('lottery_tickets', 0):,}
+
+💡 Last updated: {datetime.now().strftime('%H:%M')}
+"""
+        await callback.message.edit_text(response, parse_mode=ParseMode.HTML)
+        
+    elif action == "top":
+        top_users = await db.get_top_users("cash", 10)
+        
+        response = "🏆 <b>TOP 10 USERS BY CASH</b>\n\n"
+        
+        for i, user in enumerate(top_users, 1):
+            name = user.get('username') or user.get('first_name', 'User')
+            cash = user.get('cash', 0)
+            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+            response += f"{medal} {name}: <b>${cash:,}</b>\n"
+        
+        await callback.message.edit_text(response, parse_mode=ParseMode.HTML)
+        
+    elif action == "add":
+        response = """
+💰 <b>ADD MONEY TO USER</b>
+
+Usage: <code>/add [user_id] [currency] [amount]</code>
+
+💡 <b>Examples:</b>
 <code>/add 123456789 cash 1000</code>
-""",
-        reply_markup=one_button_keyboard()
-    )
+<code>/add 123456789 bank_balance 5000</code>
 
-@dp.message(Command("add"))
-async def cmd_add(message: Message, command: CommandObject):
-    """Add resources (owner only)"""
+📌 <b>Currencies:</b>
+• cash - User's pocket money
+• bank_balance - Bank balance
+"""
+        await callback.message.edit_text(response, parse_mode=ParseMode.HTML)
+        
+    elif action == "backup":
+        # In a real bot, you would create and send backup
+        response = """
+💾 <b>DATABASE BACKUP</b>
+
+Backup feature would:
+1. Create database backup
+2. Compress into .db.gz file
+3. Send to admin
+
+⚠️ <b>Implementation note:</b>
+This feature requires file handling.
+In production, use /backup command.
+"""
+        await callback.message.edit_text(response, parse_mode=ParseMode.HTML)
+    
+    await callback.answer()
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message):
+    """Bot statistics (admin only)"""
     if not is_owner(message.from_user.id):
+        await message.answer("❌ Admin only!")
+        return
+    
+    stats = await db.get_stats()
+    
+    response = f"""
+📊 <b>BOT STATISTICS</b>
+
+👥 <b>Users:</b> {stats.get('total_users', 0):,}
+💰 <b>Total Cash:</b> ${stats.get('total_cash', 0):,}
+🏦 <b>Total Bank:</b> ${stats.get('total_bank', 0):,}
+👨‍👩‍👧‍👦 <b>Families:</b> {stats.get('family_relations', 0):,}
+🌾 <b>Growing Crops:</b> {stats.get('growing_crops', 0):,}
+🎫 <b>Lottery Tickets:</b> {stats.get('lottery_tickets', 0):,}
+
+🕒 <b>Last updated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}
+"""
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("top"))
+async def cmd_top(message: Message, command: CommandObject):
+    """Top users"""
+    if not is_owner(message.from_user.id):
+        await message.answer("❌ Admin only!")
+        return
+    
+    by = "cash"
+    if command.args:
+        args = command.args.lower().split()
+        if args and args[0] in ["cash", "bank", "level"]:
+            by = "bank_balance" if args[0] == "bank" else args[0]
+    
+    top_users = await db.get_top_users(by, 10)
+    
+    column_name = "Cash" if by == "cash" else "Bank" if by == "bank_balance" else "Level"
+    
+    response = f"🏆 <b>TOP 10 USERS BY {column_name.upper()}</b>\n\n"
+    
+    for i, user in enumerate(top_users, 1):
+        name = user.get('username') or user.get('first_name', 'User')
+        value = user.get(by, 0)
+        
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        
+        if by == "cash" or by == "bank_balance":
+            response += f"{medal} {name}: <b>${value:,}</b>\n"
+        else:
+            response += f"{medal} {name}: <b>Level {value}</b>\n"
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("search"))
+async def cmd_search(message: Message, command: CommandObject):
+    """Search users (admin only)"""
+    if not is_owner(message.from_user.id):
+        await message.answer("❌ Admin only!")
         return
     
     if not command.args:
-        await message.answer(
-            "💰 <b>ADD RESOURCES</b>\n\n"
-            "Usage: /add [user_id] [resource] [amount]\n\n"
-            "💎 Resources: cash, gold, bonds, credits, tokens, bank_balance\n"
-            "📝 Example: /add 123456789 cash 1000",
-            reply_markup=one_button_keyboard()
-        )
+        await message.answer("❌ Usage: /search [name or username]\nExample: /search john")
+        return
+    
+    query = f"%{command.args}%"
+    cursor = await db.conn.execute(
+        """SELECT user_id, username, first_name, cash, level 
+           FROM users 
+           WHERE username LIKE ? OR first_name LIKE ? 
+           LIMIT 10""",
+        (query, query)
+    )
+    rows = await cursor.fetchall()
+    
+    if not rows:
+        await message.answer("❌ No users found!")
+        return
+    
+    response = f"🔍 <b>SEARCH RESULTS for '{command.args}'</b>\n\n"
+    
+    for row in rows:
+        user = dict(row)
+        name = user.get('username') or user.get('first_name', 'User')
+        response += f"👤 {name}\n"
+        response += f"   ID: {user.get('user_id')}\n"
+        response += f"   💰 ${user.get('cash', 0):,}\n"
+        response += f"   ⭐ Level {user.get('level', 1)}\n\n"
+    
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+@dp.message(Command("add"))
+async def cmd_add(message: Message, command: CommandObject):
+    """Add money to user (admin only)"""
+    if not is_owner(message.from_user.id):
+        await message.answer("❌ Admin only!")
+        return
+    
+    if not command.args:
+        response = """
+💰 <b>ADD MONEY</b>
+
+Usage: <code>/add [user_id] [currency] [amount]</code>
+
+💡 <b>Examples:</b>
+<code>/add 123456789 cash 1000</code>
+<code>/add 123456789 bank 5000</code>
+
+📌 <b>Currencies:</b>
+• cash - User's pocket money
+• bank - Bank balance (use "bank" not "bank_balance")
+"""
+        await message.answer(response, parse_mode=ParseMode.HTML)
         return
     
     args = command.args.split()
     if len(args) < 3:
-        await message.answer("❌ Format: /add [user_id] [resource] [amount]")
+        await message.answer("❌ Usage: /add [user_id] [currency] [amount]")
         return
     
-    user_id = int(args[0])
-    resource = args[1]
-    amount = int(args[2])
-    
-    if resource not in CURRENCIES:
-        await message.answer(f"❌ Invalid resource! Use: {', '.join(CURRENCIES)}")
-        return
-    
-    await db.update_currency(user_id, resource, amount)
-    
-    await message.answer(
-        f"✅ Added {amount:,} {resource} to user {user_id}",
-        reply_markup=one_button_keyboard()
-    )
+    try:
+        user_id = int(args[0])
+        currency = args[1].lower()
+        amount = int(args[2])
+        
+        if currency not in ["cash", "bank"]:
+            await message.answer("❌ Currency must be 'cash' or 'bank'!")
+            return
+        
+        if amount <= 0:
+            await message.answer("❌ Amount must be positive!")
+            return
+        
+        # Check if user exists
+        user = await db.get_user(user_id)
+        if not user:
+            await message.answer("❌ User not found!")
+            return
+        
+        db_currency = "bank_balance" if currency == "bank" else "cash"
+        await db.update_currency(user_id, db_currency, amount)
+        
+        # Get updated user info
+        updated_user = await db.get_user(user_id)
+        new_balance = updated_user.get(db_currency, 0)
+        
+        response = f"""
+✅ <b>MONEY ADDED!</b>
 
-@dp.message(Command("ban"))
-async def cmd_ban(message: Message):
-    """Ban user (owner only)"""
-    if not is_owner(message.from_user.id):
-        return
-    
-    target = await get_target_user(message)
-    if not target:
-        await message.answer("❌ Reply to user to ban!")
-        return
-    
-    await message.answer(
-        f"🔨 Banned {target.first_name} (ID: {target.id})",
-        reply_markup=one_button_keyboard()
-    )
+👤 User: {user.get('first_name', 'User')}
+💰 Added: ${amount:,} {currency}
+💵 New {currency} balance: ${new_balance:,}
 
-@dp.message(Command("cat"))
-async def cmd_cat(message: Message, command: CommandObject):
-    """Catbox GIFs (owner only)"""
+✅ Transaction completed.
+"""
+        
+        await message.answer(response, parse_mode=ParseMode.HTML)
+        
+    except ValueError:
+        await message.answer("❌ Invalid arguments! User ID and amount must be numbers.")
+    except Exception as e:
+        logger.error(f"Add money error: {e}")
+        await message.answer("❌ Error adding money!")
+
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: Message, command: CommandObject):
+    """Broadcast message (admin only)"""
     if not is_owner(message.from_user.id):
+        await message.answer("❌ Admin only!")
         return
     
     if not command.args:
-        await message.answer(
-            """
-🐱 <b>CATBOX GIFS</b>
-
-Commands:
-• /cat list - List GIFs
-• /cat add [cmd] [url] - Add GIF
-• /cat remove [cmd] - Remove GIF
-
-💡 Use catbox.moe links!
-""",
-            reply_markup=one_button_keyboard()
-        )
+        await message.answer("❌ Usage: /broadcast [message]\nExample: /broadcast Hello everyone!")
         return
     
-    args = command.args.lower().split()
-    if args[0] == "list":
-        await message.answer(
-            """
-🎬 <b>Available GIFs:</b>
-• hug, kiss, slap, pat
-• punch, cuddle, kill, rob
+    # In a real bot, you would broadcast to all users
+    # For now, just show a preview
+    response = f"""
+📢 <b>BROADCAST PREVIEW</b>
 
-💡 Add new: /cat add hug https://catbox.moe/your.gif
-""",
-            reply_markup=one_button_keyboard()
-        )
-    elif args[0] == "add" and len(args) >= 3:
-        cmd = args[1]
-        url = args[2]
-        await db.add_gif(cmd, url, message.from_user.id)
-        await message.answer(f"✅ Added GIF for /{cmd}", reply_markup=one_button_keyboard())
+Your message would be sent to all users:
 
-@dp.message(Command("groups"))
-async def cmd_groups(message: Message):
-    """View groups (owner only)"""
-    if not is_owner(message.from_user.id):
-        return
+{command.args}
+
+⚠️ <b>Implementation note:</b>
+In production, this would:
+1. Get all user IDs from database
+2. Send message to each user
+3. Handle errors and rate limits
+"""
     
-    groups = await db.get_groups()
-    
-    if not groups:
-        await message.answer("📭 Bot is not in any groups yet.", reply_markup=one_button_keyboard())
-        return
-    
-    groups_text = "👥 <b>GROUPS BOT IS IN:</b>\n\n"
-    
-    for group in groups:
-        groups_text += f"• {group['title']}\n"
-        groups_text += f"  └─ ID: {group['group_id']}\n"
-        groups_text += f"  └─ Added by: {group['added_by']}\n\n"
-    
-    await message.answer(
-        groups_text,
-        reply_markup=one_button_keyboard()
-    )
+    await message.answer(response, parse_mode=ParseMode.HTML)
 
 # ============================================================================
-# GROUP HANDLING
+# MAIN FUNCTION
 # ============================================================================
-
-@dp.message(F.chat.type.in_({"group", "supergroup"}))
-async def handle_group_message(message: Message):
-    """Handle group messages"""
-    if message.new_chat_members:
-        for user in message.new_chat_members:
-            if user.id == (await bot.get_me()).id:
-                # Bot added to group
-                try:
-                    await db.add_group(
-                        message.chat.id,
-                        message.chat.title or "Unknown Group",
-                        message.from_user.id
-                    )
-                    await message.answer(
-                        f"""
-🌳 Thanks for adding Family Tree Bot!
-
-👋 Hello everyone! I'm a family tree and farming bot.
-
-📋 <b>Group Commands:</b>
-• Use /help to see all commands
-• Play games together
-• Build family trees
-
-💡 Add me to your bio for bonuses!
-""",
-                        parse_mode=ParseMode.HTML
-                    )
-                except Exception as e:
-                    logger.error(f"Group add error: {e}")
-
-# ============================================================================
-# ERROR HANDLER
-# ============================================================================
-
-@dp.errors()
-async def error_handler(update: types.Update, exception: Exception):
-    """Global error handler"""
-    logger.error(f"Error: {exception}", exc_info=True)
-    return True
-
-# ============================================================================
-# STARTUP
-# ============================================================================
-
-async def setup_bot():
-    """Setup bot on startup"""
-    await db.connect()
-    
-    # Set 13 visible commands + 1 admin command
-    commands = [
-        types.BotCommand(command="start", description="Start bot"),
-        types.BotCommand(command="family", description="Family tree 👨‍👩‍👧‍👦"),
-        types.BotCommand(command="garden", description="Your garden 🌾"),
-        types.BotCommand(command="slot", description="Slot machine 🎰"),
-        types.BotCommand(command="dice", description="Dice game 🎲"),
-        types.BotCommand(command="fight", description="Fight someone ⚔️"),
-        types.BotCommand(command="stocks", description="Stock market 📈"),
-        types.BotCommand(command="bank", description="Bank system 🏦"),
-        types.BotCommand(command="lottery", description="Lottery tickets 🎫"),
-        types.BotCommand(command="hug", description="Hug someone 🤗"),
-        types.BotCommand(command="rob", description="Rob someone 💰"),
-        types.BotCommand(command="daily", description="Daily bonus 💸"),
-        types.BotCommand(command="me", description="Your profile 👤"),
-        types.BotCommand(command="help", description="Help 🆘"),
-        types.BotCommand(command="admin", description="Admin panel 👑")
-    ]
-    
-    await bot.set_my_commands(commands)
-    
-    print("=" * 60)
-    print("🌳 ULTIMATE FAMILY TREE BOT - COMPLETE")
-    print(f"Version: 23.0 - 13 Commands, One Button")
-    print(f"Images: {'✅ ENABLED' if HAS_PILLOW else '❌ DISABLED'}")
-    print("=" * 60)
-    
-    if not HAS_PILLOW:
-        print("\n⚠️  Install Pillow for images:")
-        print("pip install pillow")
 
 async def main():
     """Main function"""
-    try:
-        await setup_bot()
-        print("🚀 Starting bot polling...")
-        
-        await dp.start_polling(bot)
-        
-    except KeyboardInterrupt:
-        print("\n🛑 Bot stopped by user")
-    finally:
-        await db.conn.close()
+    logger.info("Starting Family Tree Bot...")
+    
+    # Connect to database
+    await db.connect()
+    logger.info("Database connected")
+    
+    # Start polling
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())

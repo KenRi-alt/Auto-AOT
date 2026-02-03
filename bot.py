@@ -11,17 +11,17 @@ import logging
 import traceback
 from datetime import datetime
 
-# Add current directory to path
+# Add current directory to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
-# ✅ CORRECT IMPORTS:
+# Import from local modules
 try:
     from config import Config
-    from database import Database       # Database class
-    from images import image_gen        # ✅ FIXED: image_gen is in images.py
+    from database import Database
+    from images import ImageGenerator
     from utils.logger import setup_logger, log_to_channel
-    from utils.helpers import get_target_user, format_money
+    from utils.helpers import get_target_user, format_money, format_time, check_cooldown, set_cooldown
     
     # Import handlers
     from handlers.family import family_router
@@ -30,16 +30,20 @@ try:
     from handlers.admin import admin_router
     from handlers.utils import utils_router
     
+    print("✅ All imports successful!")
+    
 except ImportError as e:
     print(f"❌ Import Error: {e}")
     print(f"📁 Current directory: {current_dir}")
     print(f"📂 Files in directory: {os.listdir(current_dir)}")
     
-    # Show what's available
-    print("\n🔍 Available modules:")
-    for file in os.listdir(current_dir):
-        if file.endswith('.py'):
-            print(f"  - {file}")
+    # Check for missing files
+    required_files = ['config.py', 'database.py', 'images.py']
+    for file in required_files:
+        if os.path.exists(os.path.join(current_dir, file)):
+            print(f"✅ {file} exists")
+        else:
+            print(f"❌ {file} is missing")
     
     sys.exit(1)
 
@@ -52,11 +56,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 bot_instance = None
 dp_instance = None
 db_instance = None
+image_gen = None
 logger = None
 
 async def startup():
     """Initialize bot on startup"""
-    global bot_instance, dp_instance, db_instance, logger
+    global bot_instance, dp_instance, db_instance, image_gen, logger
     
     try:
         # Setup logging
@@ -67,6 +72,10 @@ async def startup():
         db_instance = Database()
         await db_instance.connect()
         logger.info("✅ Database connected")
+        
+        # Initialize image generator
+        image_gen = ImageGenerator()
+        logger.info("✅ Image generator initialized")
         
         # Initialize bot
         bot_instance = Bot(
@@ -88,15 +97,16 @@ async def startup():
         # Set dependencies
         dp_instance["db"] = db_instance
         dp_instance["bot"] = bot_instance
+        dp_instance["image_gen"] = image_gen
         
         # Send startup notification
         try:
             await log_to_channel(
                 bot_instance, 
-                "🚀 **BOT STARTED**\n"
+                f"🚀 **BOT STARTED**\n"
                 f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"⚙️ Version: {Config.VERSION}\n"
-                "✅ All systems ready"
+                f"✅ All systems ready"
             )
         except Exception as e:
             logger.warning(f"Could not send startup log: {e}")

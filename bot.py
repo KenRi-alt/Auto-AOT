@@ -15,11 +15,11 @@ from datetime import datetime
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
-# Import from correct modules
+# ✅ CORRECT IMPORTS:
 try:
     from config import Config
-    from database import Database
-    from images import image_gen  # ⚠️ FIX: Changed from 'database' to 'images'
+    from database import Database       # Database class
+    from images import image_gen        # ✅ FIXED: image_gen is in images.py
     from utils.logger import setup_logger, log_to_channel
     from utils.helpers import get_target_user, format_money
     
@@ -34,6 +34,13 @@ except ImportError as e:
     print(f"❌ Import Error: {e}")
     print(f"📁 Current directory: {current_dir}")
     print(f"📂 Files in directory: {os.listdir(current_dir)}")
+    
+    # Show what's available
+    print("\n🔍 Available modules:")
+    for file in os.listdir(current_dir):
+        if file.endswith('.py'):
+            print(f"  - {file}")
+    
     sys.exit(1)
 
 from aiogram import Bot, Dispatcher
@@ -86,10 +93,10 @@ async def startup():
         try:
             await log_to_channel(
                 bot_instance, 
-                f"🚀 **BOT STARTED**\n"
+                "🚀 **BOT STARTED**\n"
                 f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"⚙️ Version: {Config.VERSION}\n"
-                f"✅ All systems ready"
+                "✅ All systems ready"
             )
         except Exception as e:
             logger.warning(f"Could not send startup log: {e}")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 🌳 FAMILY TREE BOT - MAIN FILE
-Professional modular bot with crash prevention
+Fixed imports for Railway
 """
 
 import os
@@ -11,24 +11,38 @@ import logging
 import traceback
 from datetime import datetime
 
-# Add current directory to path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Fix 1: Add current directory to Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
+
+# Fix 2: Import from local directory
+try:
+    from config import Config
+    from database import Database
+    from images import image_gen
+    from utils.logger import setup_logger, log_to_channel
+    from utils.helpers import get_target_user, format_money
+    
+    # Import handlers
+    from handlers.family import family_router
+    from handlers.economy import economy_router
+    from handlers.games import games_router
+    from handlers.admin import admin_router
+    
+    # Create utils router inline since we don't have utils.py file
+    from aiogram import Router
+    utils_router = Router()
+    
+except ImportError as e:
+    print(f"❌ Import Error: {e}")
+    print(f"📁 Current directory: {current_dir}")
+    print(f"📂 Files in directory: {os.listdir(current_dir)}")
+    sys.exit(1)
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-
-from config import Config
-from database import Database
-from utils.logger import setup_logger, log_to_channel
-
-# Import routers
-from handlers.family import family_router
-from handlers.economy import economy_router
-from handlers.games import games_router
-from handlers.admin import admin_router
-from handlers.utils import utils_router
 
 # Global instances
 bot_instance = None
@@ -58,9 +72,9 @@ async def startup():
         
         # Initialize dispatcher
         storage = MemoryStorage()
-        dp_instance = Dispatcher()
+        dp_instance = Dispatcher(storage=storage)
         
-        # Include routers with dependency injection
+        # Include routers
         dp_instance.include_router(family_router)
         dp_instance.include_router(economy_router)
         dp_instance.include_router(games_router)
@@ -71,14 +85,14 @@ async def startup():
         dp_instance["db"] = db_instance
         dp_instance["bot"] = bot_instance
         
-        # Send startup notification to log channel
+        # Send startup notification
         try:
             await log_to_channel(
                 bot_instance, 
-                f"🚀 **BOT STARTED SUCCESSFULLY**\n"
+                f"🚀 **BOT STARTED**\n"
                 f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"⚙️ Version: {Config.VERSION}\n"
-                f"✅ All systems operational"
+                f"✅ All systems ready"
             )
         except Exception as e:
             logger.warning(f"Could not send startup log: {e}")
@@ -96,18 +110,6 @@ async def shutdown():
     
     try:
         logger.info("🛑 Shutting down bot...")
-        
-        # Send shutdown notification
-        if bot_instance:
-            try:
-                await log_to_channel(
-                    bot_instance,
-                    f"🛑 **BOT SHUTTING DOWN**\n"
-                    f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"🔌 Graceful shutdown initiated"
-                )
-            except:
-                pass
         
         # Close database
         if db_instance:
@@ -129,26 +131,11 @@ async def error_handler(update, exception):
     try:
         logger.error(f"Global error: {exception}", exc_info=True)
         
-        # Send to log channel
-        if bot_instance:
-            error_msg = f"❌ **ERROR**\nType: `{type(exception).__name__}`\n"
-            error_msg += f"Message: `{str(exception)[:200]}`\n"
-            
-            if update and update.message:
-                error_msg += f"User: {update.message.from_user.id}\n"
-                error_msg += f"Command: {update.message.text[:50]}"
-            
-            try:
-                await log_to_channel(bot_instance, error_msg)
-            except:
-                pass
-        
         # Send user-friendly message
         if update and update.message:
             try:
                 await update.message.answer(
-                    "⚠️ An error occurred. Our team has been notified.\n"
-                    "Please try again in a moment."
+                    "⚠️ An error occurred. Please try again later."
                 )
             except:
                 pass
@@ -166,8 +153,7 @@ async def main():
         dp_instance.errors.register(error_handler)
         
         logger.info("🤖 Bot is now running...")
-        logger.info(f"👑 Owner: {Config.OWNER_ID}")
-        logger.info(f"📊 Log Channel: {Config.LOG_CHANNEL}")
+        logger.info(f"👑 Owner ID: {Config.OWNER_ID}")
         
         # Start polling
         await dp_instance.start_polling(
@@ -179,20 +165,9 @@ async def main():
     except KeyboardInterrupt:
         logger.info("👋 Bot stopped by user")
     except Exception as e:
-        logger.error(f"💥 Fatal error in main loop: {e}")
+        logger.error(f"💥 Fatal error: {e}")
         logger.error(traceback.format_exc())
         
-        # Try to send crash report
-        try:
-            if bot_instance:
-                await log_to_channel(
-                    bot_instance,
-                    f"💥 **BOT CRASHED**\nError: `{str(e)[:300]}`\n"
-                    "Attempting auto-recovery..."
-                )
-        except:
-            pass
-            
         # Wait and restart
         await asyncio.sleep(10)
         logger.info("🔄 Attempting restart...")

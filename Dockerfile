@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Update pip first (important for dependency resolution)
+# Update pip first
 RUN pip install --upgrade pip
 
 # Install system dependencies
@@ -14,14 +14,14 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot code
-COPY bot.py .
+# ⚠️ FIX: Copy ALL files (except those in .dockerignore)
+COPY . .
 
-# Create non-root user (security best practice)
+# Create non-root user
 RUN useradd -m botuser && chown -R botuser:botuser /app
 USER botuser
 
-# Create data directory
+# Create data directory for database
 RUN mkdir -p /home/botuser/data
 
 # Start the bot

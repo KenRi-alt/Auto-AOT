@@ -11,15 +11,15 @@ import logging
 import traceback
 from datetime import datetime
 
-# Fix 1: Add current directory to Python path
+# Add current directory to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
-# Fix 2: Import from local directory
+# Import from correct modules
 try:
     from config import Config
     from database import Database
-    from images import image_gen
+    from images import image_gen  # ⚠️ FIX: Changed from 'database' to 'images'
     from utils.logger import setup_logger, log_to_channel
     from utils.helpers import get_target_user, format_money
     
@@ -28,10 +28,7 @@ try:
     from handlers.economy import economy_router
     from handlers.games import games_router
     from handlers.admin import admin_router
-    
-    # Create utils router inline since we don't have utils.py file
-    from aiogram import Router
-    utils_router = Router()
+    from handlers.utils import utils_router
     
 except ImportError as e:
     print(f"❌ Import Error: {e}")
